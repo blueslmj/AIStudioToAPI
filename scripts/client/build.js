@@ -445,18 +445,19 @@ class RequestProcessor {
                         if (bodyObj.generationConfig?.thinkingConfig) {
                             delete bodyObj.generationConfig.thinkingConfig;
                         }
-                        // Lyria 3 supports systemInstruction; remove it only for the other model families.
+                        // Lyria 3 models support systemInstruction.
                         if (!isLyria3Model && bodyObj.systemInstruction) {
                             delete bodyObj.systemInstruction;
                         }
                         this._removeStructuredOutputConfig(bodyObj, {
-                            preserveResponseFormat: isGemini38TtsModel,
+                            preserveResponseFormat: isGemini38TtsModel || isLyria3Model,
                         });
                     }
 
                     // --- Module 1.5: responseModalities Handling ---
                     // Image: keep as-is (needed for image generation)
-                    // Embedding/Transcribe/Lyria: remove
+                    // Embedding/Transcribe: remove
+                    // Lyria 3: keep
                     // TTS: force to ["AUDIO"]
                     if (isTtsModel) {
                         if (!bodyObj.generationConfig) {
@@ -464,7 +465,7 @@ class RequestProcessor {
                         }
                         bodyObj.generationConfig.responseModalities = ["AUDIO"];
                         Logger.output("TTS model detected, setting responseModalities to AUDIO");
-                    } else if (isEmbeddingModel || isTranscribeModel || isLyria3Model) {
+                    } else if (isEmbeddingModel || isTranscribeModel) {
                         if (bodyObj.generationConfig?.responseModalities) {
                             delete bodyObj.generationConfig.responseModalities;
                         }
