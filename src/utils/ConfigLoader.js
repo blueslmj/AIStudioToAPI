@@ -215,17 +215,17 @@ class ConfigLoader {
                     );
                 } else {
                     this.logger.warn(`[System] models.json is not in the expected format, using default model list.`);
-                    config.modelList = [{ name: "models/gemini-2.5-flash-lite" }];
+                    config.modelList = [{ name: "models/gemini-flash-lite-latest" }];
                 }
             } else {
                 this.logger.warn(`[System] models.json file not found, using default model list.`);
-                config.modelList = [{ name: "models/gemini-2.5-flash-lite" }];
+                config.modelList = [{ name: "models/gemini-flash-lite-latest" }];
             }
         } catch (error) {
             this.logger.error(
                 `[System] Failed to read or parse models.json: ${error.message}, using default model list.`
             );
-            config.modelList = [{ name: "models/gemini-2.5-flash-lite" }];
+            config.modelList = [{ name: "models/gemini-flash-lite-latest" }];
         }
 
         this._printConfiguration(config);

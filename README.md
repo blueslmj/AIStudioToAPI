@@ -214,7 +214,6 @@ services:
 - `POST /v1beta/models/{model_name}:streamGenerateContent`: 流式生成内容、图片和语音，支持真流式和假流式。
 - `POST /v1beta/models/{model_name}:embedContent`: 生成单条文本嵌入向量。
 - `POST /v1beta/models/{model_name}:batchEmbedContents`: 批量生成文本嵌入向量。
-- `POST /v1beta/models/{model_name}:predict`: Imagen 系列模型图像生成。
 
 ### 👤 Anthropic 兼容 API
 

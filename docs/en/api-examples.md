@@ -9,7 +9,7 @@ curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "messages": [
       {
         "role": "user",
@@ -27,7 +27,7 @@ curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "messages": [
       {
         "role": "user",
@@ -93,7 +93,7 @@ curl -X POST http://localhost:7860/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "input": "Summarize the main idea of functional programming in 3 sentences.",
     "stream": false
   }'
@@ -106,7 +106,7 @@ curl -X POST http://localhost:7860/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "input": [
       {
         "role": "user",
@@ -125,7 +125,7 @@ curl -X POST http://localhost:7860/v1/responses \
 ## ♊ Gemini Native API Format
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-lite:generateContent \
+curl -X POST http://localhost:7860/v1beta/models/gemini-flash-lite-latest:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -145,7 +145,7 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-lite:generateC
 ### 🌊 Streaming Content Generation
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse \
+curl -X POST http://localhost:7860/v1beta/models/gemini-flash-lite-latest:streamGenerateContent?alt=sse \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -202,49 +202,67 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-image:streamGe
   }'
 ```
 
-### 🎨 Imagen (Image Generation) [Official Docs](https://ai.google.dev/gemini-api/docs/imagen)
+### 🎵 Lyria Music Generation [Official Docs](https://ai.google.dev/gemini-api/docs/music-generation)
 
-Use the `imagen` series models to generate images through the `:predict` endpoint.
-
-#### Basic Image Generation
+#### Generate a 30-Second Music Clip
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/imagen-4.0-generate-001:predict \
+curl -X POST http://localhost:7860/v1beta/models/lyria-3-clip-preview:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "instances": [
+    "contents": [
       {
-        "prompt": "Robot holding a red skateboard"
+        "parts": [
+          {
+            "text": "Create a 30-second cheerful acoustic folk song with guitar and harmonica."
+          }
+        ]
       }
-    ],
-    "parameters": {
-      "sampleCount": 1
-    }
+    ]
   }'
 ```
 
-#### Generate Multiple Images
-
-Adjust `sampleCount` to generate multiple images at once (maximum 4).
+#### Generate a Full-Length Song
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/imagen-4.0-generate-001:predict \
+curl -X POST http://localhost:7860/v1beta/models/lyria-3.5:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "instances": [
+    "contents": [
       {
-        "prompt": "A futuristic city at sunset with flying cars"
+        "parts": [
+          {
+            "text": "Create an epic cinematic orchestral piece about a journey home. Start with a solo piano, build through sweeping strings, and end with a powerful climax."
+          }
+        ]
       }
-    ],
-    "parameters": {
-      "sampleCount": 4
-    }
+    ]
   }'
 ```
 
-> 💡 **Tip**: Imagen responses return base64-encoded image data. Each generated image will be included in the `predictions` array.
+### 🎧 Audio Transcription [Official Docs](https://ai.google.dev/gemini-api/docs/transcribe)
+
+```bash
+curl -X POST http://localhost:7860/v1beta/models/gemini-3.5-transcribe:generateContent \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key-1" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          {
+            "fileData": {
+              "fileUri": "YOUR_FILE_URI",
+              "mimeType": "audio/mp3"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
 
 ### 🎤 TTS (Text-to-Speech) [Official Docs](https://ai.google.dev/gemini-api/docs/speech-generation)
 
@@ -436,7 +454,7 @@ curl -X POST http://localhost:7860/v1/messages \
   -H "x-api-key: your-api-key-1" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "max_tokens": 1024,
     "messages": [
       {
@@ -456,7 +474,7 @@ curl -X POST http://localhost:7860/v1/messages \
   -H "x-api-key: your-api-key-1" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "max_tokens": 1024,
     "messages": [
       {

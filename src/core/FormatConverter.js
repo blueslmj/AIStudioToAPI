@@ -577,7 +577,7 @@ class FormatConverter {
         // 2) streaming override: trailing `-real` / `-fake` after any thinking suffix
         // 3) thinkingLevel override: trailing `-minimal` / `(minimal)` etc.
         // Combined user-facing suffix order: thinking -> streaming -> built-in tools
-        const rawModel = openaiBody.model || "gemini-2.5-flash-lite";
+        const rawModel = openaiBody.model || "gemini-flash-lite-latest";
         const {
             cleanModelName: toolStrippedModel,
             forceCodeExecution: modelForceCodeExecution,
@@ -1142,7 +1142,7 @@ class FormatConverter {
      * @param {string} modelName - The model name
      * @param {object} streamState - Optional state object to track thought mode
      */
-    translateGoogleToOpenAIStream(googleChunk, modelName = "gemini-2.5-flash-lite", streamState = null) {
+    translateGoogleToOpenAIStream(googleChunk, modelName = "gemini-flash-lite-latest", streamState = null) {
         this.logger.debug(`[Adapter] Debug: Received Google chunk for OpenAI: ${googleChunk}`);
 
         // Ensure streamState exists to properly track tool call indices
@@ -1324,7 +1324,7 @@ class FormatConverter {
      * @param {object} streamState - State object to track stream progress
      * @returns {string|null} - SSE formatted events for Response API
      */
-    translateGoogleToResponseAPIStream(googleChunk, modelName = "gemini-2.5-flash-lite", streamState = null) {
+    translateGoogleToResponseAPIStream(googleChunk, modelName = "gemini-flash-lite-latest", streamState = null) {
         this.logger.debug(`[Adapter] Debug: Received Google chunk for Response API: ${googleChunk}`);
 
         // Ensure streamState exists
@@ -1807,7 +1807,7 @@ class FormatConverter {
     /**
      * Convert Google non-stream response to OpenAI format
      */
-    convertGoogleToOpenAINonStream(googleResponse, modelName = "gemini-2.5-flash-lite") {
+    convertGoogleToOpenAINonStream(googleResponse, modelName = "gemini-flash-lite-latest") {
         try {
             this.logger.debug(
                 `[Adapter] Debug: Received Google response for OpenAI non-stream: ${JSON.stringify(googleResponse)}`
@@ -1915,7 +1915,7 @@ class FormatConverter {
      * @param {string} modelName - Model name
      * @returns {object} - OpenAI Response API format response
      */
-    convertGoogleToResponseAPINonStream(googleResponse, modelName = "gemini-2.5-flash-lite", responseDefaults = {}) {
+    convertGoogleToResponseAPINonStream(googleResponse, modelName = "gemini-flash-lite-latest", responseDefaults = {}) {
         try {
             this.logger.debug(
                 `[Adapter] Debug: Received Google response for Response API non-stream: ${JSON.stringify(googleResponse)}`
@@ -2173,7 +2173,7 @@ class FormatConverter {
         // 2) streaming override: trailing `-real` / `-fake` after any thinking suffix
         // 3) thinkingLevel override: trailing `-minimal` / `(minimal)` etc.
         // Combined user-facing suffix order: thinking -> streaming -> built-in tools
-        const rawModel = claudeBody.model || "gemini-2.5-flash-lite";
+        const rawModel = claudeBody.model || "gemini-flash-lite-latest";
         const {
             cleanModelName: toolStrippedModel,
             forceCodeExecution: modelForceCodeExecution,
@@ -2703,7 +2703,7 @@ class FormatConverter {
      * @param {string} modelName - The model name
      * @param {object} streamState - State object to track streaming progress
      */
-    translateGoogleToClaudeStream(googleChunk, modelName = "gemini-2.5-flash-lite", streamState = null) {
+    translateGoogleToClaudeStream(googleChunk, modelName = "gemini-flash-lite-latest", streamState = null) {
         this.logger.debug(`[Adapter] Debug: Received Google chunk for Claude: ${googleChunk}`);
 
         if (!streamState) {
@@ -2940,7 +2940,7 @@ class FormatConverter {
     /**
      * Convert Google non-stream response to Claude format
      */
-    convertGoogleToClaudeNonStream(googleResponse, modelName = "gemini-2.5-flash-lite") {
+    convertGoogleToClaudeNonStream(googleResponse, modelName = "gemini-flash-lite-latest") {
         try {
             this.logger.debug(
                 `[Adapter] Debug: Received Google response for Claude non-stream: ${JSON.stringify(googleResponse)}`
@@ -3057,7 +3057,7 @@ class FormatConverter {
         // 2) streaming override: trailing `-real` / `-fake` after any thinking suffix
         // 3) thinkingLevel override: trailing `-minimal` / `(minimal)` etc.
         // Combined user-facing suffix order: thinking -> streaming -> built-in tools
-        const rawModel = responseBody.model || "gemini-2.5-flash-lite";
+        const rawModel = responseBody.model || "gemini-flash-lite-latest";
         const {
             cleanModelName: toolStrippedModel,
             forceCodeExecution: modelForceCodeExecution,

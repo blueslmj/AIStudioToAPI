@@ -9,7 +9,7 @@ curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "messages": [
       {
         "role": "user",
@@ -27,7 +27,7 @@ curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "messages": [
       {
         "role": "user",
@@ -93,7 +93,7 @@ curl -X POST http://localhost:7860/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "input": "请用三句话总结函数式编程的核心思想。",
     "stream": false
   }'
@@ -106,7 +106,7 @@ curl -X POST http://localhost:7860/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "input": [
       {
         "role": "user",
@@ -125,7 +125,7 @@ curl -X POST http://localhost:7860/v1/responses \
 ## ♊ Gemini 原生 API 格式
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-lite:generateContent \
+curl -X POST http://localhost:7860/v1beta/models/gemini-flash-lite-latest:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -145,7 +145,7 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-lite:generateC
 ### 🌊 使用流式响应
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse \
+curl -X POST http://localhost:7860/v1beta/models/gemini-flash-lite-latest:streamGenerateContent?alt=sse \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -202,49 +202,67 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-image:streamGe
   }'
 ```
 
-### 🎨 Imagen 图像生成 [官方文档](https://ai.google.dev/gemini-api/docs/imagen?hl=zh-cn)
+### 🎵 Lyria 音乐生成 [官方文档](https://ai.google.dev/gemini-api/docs/music-generation?hl=zh-cn)
 
-使用 `imagen` 系列模型通过 `:predict` 端点生成图像。
-
-#### 基础图像生成
+#### 生成 30 秒音乐片段
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/imagen-4.0-generate-001:predict \
+curl -X POST http://localhost:7860/v1beta/models/lyria-3-clip-preview:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "instances": [
+    "contents": [
       {
-        "prompt": "机器人手持红色滑板"
+        "parts": [
+          {
+            "text": "创作一首 30 秒的欢快原声民谣，使用吉他和口琴。"
+          }
+        ]
       }
-    ],
-    "parameters": {
-      "sampleCount": 1
-    }
+    ]
   }'
 ```
 
-#### 批量生成多张图像
-
-调整 `sampleCount` 可一次生成多张图像（最多 4 张）。
+#### 生成完整歌曲
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/imagen-4.0-generate-001:predict \
+curl -X POST http://localhost:7860/v1beta/models/lyria-3.5:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "instances": [
+    "contents": [
       {
-        "prompt": "夕阳下的未来城市，天空中有飞行汽车"
+        "parts": [
+          {
+            "text": "创作一首关于归途的史诗电影配乐，以钢琴独奏开场，逐渐加入弦乐，并在结尾达到高潮。"
+          }
+        ]
       }
-    ],
-    "parameters": {
-      "sampleCount": 4
-    }
+    ]
   }'
 ```
 
-> 💡 **提示**：Imagen 响应返回的是 base64 编码的图像数据，每张生成的图像都会包含在 `predictions` 数组中。
+### 🎧 音频转写 [官方文档](https://ai.google.dev/gemini-api/docs/transcribe?hl=zh-cn)
+
+```bash
+curl -X POST http://localhost:7860/v1beta/models/gemini-3.5-transcribe:generateContent \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key-1" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          {
+            "fileData": {
+              "fileUri": "YOUR_FILE_URI",
+              "mimeType": "audio/mp3"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
 
 ### 🎤 TTS 语音合成 [官方文档](https://ai.google.dev/gemini-api/docs/speech-generation?hl=zh-cn)
 
@@ -436,7 +454,7 @@ curl -X POST http://localhost:7860/v1/messages \
   -H "x-api-key: your-api-key-1" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "max_tokens": 1024,
     "messages": [
       {
@@ -456,7 +474,7 @@ curl -X POST http://localhost:7860/v1/messages \
   -H "x-api-key: your-api-key-1" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-flash-lite-latest",
     "max_tokens": 1024,
     "messages": [
       {
