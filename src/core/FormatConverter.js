@@ -398,41 +398,37 @@ class FormatConverter {
     }
 
     /**
-     * Convert JSON Schema to Gemini parameters format.
+     * Convert JSON Schema to Gemini responseSchema format.
      * Handles nullable types, enums, and ensures uppercase types.
      *
      * @param {Object} obj - The schema object to convert
-     * @param {boolean} [isResponseSchema=false] - If true, applies stricter rules (e.g. anyOf for unions) for Structured Outputs
      * @param {boolean} [isProperties=false] - If true, the current object is a map of property definitions, so keys should not be filtered
      * @returns {Object} The converted schema
      */
-    _convertSchemaToGemini(obj, isResponseSchema = false, isProperties = false) {
+    _convertSchemaToGemini(obj, isProperties = false) {
         if (!obj || typeof obj !== "object") return obj;
 
         const result = Array.isArray(obj) ? [] : {};
+        const unsupportedKeys = [
+            "$schema",
+            "additionalProperties",
+            "ref",
+            "$ref",
+            "propertyNames",
+            "patternProperties",
+            "unevaluatedProperties",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+            "const",
+            "$comment",
+            "enumDescriptions",
+            "default",
+            "examples",
+            "$defs",
+            "id",
+        ];
 
         for (const key of Object.keys(obj)) {
-            // 1. Filter out unsupported fields using a blacklist approach
-            const unsupportedKeys = [
-                "$schema",
-                "additionalProperties",
-                "ref",
-                "$ref",
-                "propertyNames",
-                "patternProperties",
-                "unevaluatedProperties",
-                "exclusiveMinimum",
-                "exclusiveMaximum",
-                "const",
-                "$comment",
-                "enumDescriptions",
-            ];
-
-            if (isResponseSchema) {
-                // For Structured Outputs: stricter filtering of metadata that causes 400 errors
-                unsupportedKeys.push("default", "examples", "$defs", "id");
-            }
-
             // ONLY Filter metadata keywords if NOT a property name (isProperties is false)
             if (!isProperties && unsupportedKeys.includes(key)) {
                 continue;
@@ -452,16 +448,14 @@ class FormatConverter {
 
                     if (nonNullVariants.length === 1) {
                         // Collapse single variant. Reset isProperties to false for the variant's schema.
-                        const converted = this._convertSchemaToGemini(nonNullVariants[0], isResponseSchema, false);
+                        const converted = this._convertSchemaToGemini(nonNullVariants[0], false);
                         // Merge converted properties into result
                         Object.assign(result, converted);
                         if (hasNull) result.nullable = true;
                         continue; // Skip setting 'anyOf' explicitly
                     } else if (nonNullVariants.length > 0) {
                         // Keep anyOf for multiple variants. Reset isProperties for sub-schemas.
-                        result.anyOf = nonNullVariants.map(v =>
-                            this._convertSchemaToGemini(v, isResponseSchema, false)
-                        );
+                        result.anyOf = nonNullVariants.map(v => this._convertSchemaToGemini(v, false));
                         continue;
                     } else if (hasNull) {
                         // Only null type? Keep it as nullable without forcing a specific type.
@@ -486,15 +480,10 @@ class FormatConverter {
                         // Single non-null type: use it directly
                         result[key] = nonNullTypes[0].toUpperCase();
                     } else if (nonNullTypes.length > 1) {
-                        // Multiple non-null types: e.g. ["string", "integer"]
-                        if (isResponseSchema) {
-                            // For Response Schema: Gemini doesn't support array types, use anyOf
-                            result.anyOf = nonNullTypes.map(t => ({
-                                type: t.toUpperCase(),
-                            }));
-                        } else {
-                            result[key] = nonNullTypes.map(t => t.toUpperCase());
-                        }
+                        // Gemini responseSchema doesn't support array types, use anyOf.
+                        result.anyOf = nonNullTypes.map(t => ({
+                            type: t.toUpperCase(),
+                        }));
                     } else {
                         // Only null type, default to STRING
                         result[key] = "STRING";
@@ -504,23 +493,18 @@ class FormatConverter {
                     result[key] = obj[key].toUpperCase();
                 } else if (typeof obj[key] === "object" && obj[key] !== null) {
                     // Type being an object is a sub-schema definition, not property name mapping
-                    result[key] = this._convertSchemaToGemini(obj[key], isResponseSchema, false);
+                    result[key] = this._convertSchemaToGemini(obj[key], false);
                 } else {
                     result[key] = obj[key];
                 }
             } else if (key === "enum" && !isProperties) {
-                // 2. Ensure all enum values are strings (Only for Response Schema)
-                if (isResponseSchema) {
-                    if (Array.isArray(obj[key])) {
-                        result[key] = obj[key].map(String);
-                    } else if (obj[key] !== undefined && obj[key] !== null) {
-                        result[key] = [String(obj[key])];
-                    }
-                    result["type"] = "STRING";
-                } else {
-                    // For Tools: Allow original enum values
-                    result[key] = obj[key];
+                // Ensure all responseSchema enum values are strings.
+                if (Array.isArray(obj[key])) {
+                    result[key] = obj[key].map(String);
+                } else if (obj[key] !== undefined && obj[key] !== null) {
+                    result[key] = [String(obj[key])];
                 }
+                result["type"] = "STRING";
             } else if (typeof obj[key] === "object" && obj[key] !== null) {
                 // Recursion logic:
                 // - If key is 'properties', next level is a map of property NAMES. Set isProperties = true.
@@ -529,7 +513,7 @@ class FormatConverter {
                 const nextIsProperties = key === "properties";
                 const recursionFlag = isProperties ? false : nextIsProperties;
 
-                result[key] = this._convertSchemaToGemini(obj[key], isResponseSchema, recursionFlag);
+                result[key] = this._convertSchemaToGemini(obj[key], recursionFlag);
             } else {
                 result[key] = obj[key];
             }
@@ -1000,9 +984,7 @@ class FormatConverter {
                     try {
                         this.logger.debug(`[Adapter] Debug: Converting OpenAI JSON Schema: ${JSON.stringify(schema)}`);
 
-                        // Convert schema to Gemini format (reuse shared method)
-                        // isResponseSchema = true for Structured Output
-                        const convertedSchema = this._convertSchemaToGemini(schema, true);
+                        const convertedSchema = this._convertSchemaToGemini(schema);
 
                         this.logger.debug(
                             `[Adapter] Debug: Converted Gemini JSON Schema: ${JSON.stringify(convertedSchema)}`
@@ -2531,7 +2513,7 @@ class FormatConverter {
                 if (schema) {
                     this.logger.debug(`[Adapter] Debug: Converting Claude JSON Schema: ${JSON.stringify(schema)}`);
                     generationConfig.responseMimeType = "application/json";
-                    generationConfig.responseSchema = this._convertSchemaToGemini(schema, true);
+                    generationConfig.responseSchema = this._convertSchemaToGemini(schema);
                     this.logger.debug(
                         `[Adapter] Debug: Converted Gemini JSON Schema: ${JSON.stringify(generationConfig.responseSchema)}`
                     );
@@ -2553,7 +2535,7 @@ class FormatConverter {
             if (format.type === "json_schema" && format.schema) {
                 this.logger.debug(`[Adapter] Debug: Converting Claude JSON Schema: ${JSON.stringify(format.schema)}`);
                 generationConfig.responseMimeType = "application/json";
-                generationConfig.responseSchema = this._convertSchemaToGemini(format.schema, true);
+                generationConfig.responseSchema = this._convertSchemaToGemini(format.schema);
                 this.logger.debug(
                     `[Adapter] Debug: Converted Gemini JSON Schema: ${JSON.stringify(generationConfig.responseSchema)}`
                 );
@@ -3567,7 +3549,7 @@ class FormatConverter {
                 const schema = jsonSchemaConfig.schema;
                 if (schema) {
                     try {
-                        const convertedSchema = this._convertSchemaToGemini(schema, true);
+                        const convertedSchema = this._convertSchemaToGemini(schema);
                         generationConfig.responseMimeType = "application/json";
                         generationConfig.responseSchema = convertedSchema;
                         this.logger.info(
