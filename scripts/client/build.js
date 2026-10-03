@@ -387,56 +387,18 @@ class RequestProcessor {
         return finalUrl;
     }
 
-    _filterGeminiBuiltInTools(bodyObj, blockedToolKeys) {
-        if (!Array.isArray(bodyObj.tools)) {
-            return 0;
-        }
-
-        let removedCount = 0;
-        const filteredTools = [];
-
-        bodyObj.tools.forEach(tool => {
-            if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
-                filteredTools.push(tool);
-                return;
-            }
-
-            const filteredTool = { ...tool };
-            blockedToolKeys.forEach(key => {
-                if (Object.prototype.hasOwnProperty.call(filteredTool, key)) {
-                    delete filteredTool[key];
-                    removedCount++;
-                }
-            });
-
-            if (Object.keys(filteredTool).length > 0) {
-                filteredTools.push(filteredTool);
-            }
-        });
-
-        if (filteredTools.length > 0) {
-            bodyObj.tools = filteredTools;
-        } else {
-            delete bodyObj.tools;
-        }
-
-        if (removedCount > 0 && bodyObj.toolConfig?.includeServerSideToolInvocations) {
-            delete bodyObj.toolConfig.includeServerSideToolInvocations;
-            if (Object.keys(bodyObj.toolConfig).length === 0) {
-                delete bodyObj.toolConfig;
-            }
-        }
-
-        return removedCount;
-    }
-
-    _removeStructuredOutputConfig(bodyObj) {
+    _removeStructuredOutputConfig(bodyObj, { preserveResponseFormat = false } = {}) {
         const generationConfig = bodyObj.generationConfig;
         if (!generationConfig) {
             return;
         }
 
-        ["responseMimeType", "responseSchema", "responseJsonSchema", "responseFormat"].forEach(key => {
+        const structuredOutputKeys = ["responseMimeType", "responseSchema", "responseJsonSchema"];
+        if (!preserveResponseFormat) {
+            structuredOutputKeys.push("responseFormat");
+        }
+
+        structuredOutputKeys.forEach(key => {
             if (Object.prototype.hasOwnProperty.call(generationConfig, key)) {
                 delete generationConfig[key];
             }
@@ -464,8 +426,13 @@ class RequestProcessor {
                     const isImageModel = requestPath.includes("-image") || requestPath.includes("imagen");
                     const isGemini25ImageModel = isImageModel && requestPath.includes("2.5");
                     const isGemini31FlashLiteImageModel = requestPath.includes("gemini-3.1-flash-lite-image");
+                    const isGemini31FlashImageModel = requestPath.includes("gemini-3.1-flash-image");
+                    const isGemini3ProImageModel = requestPath.includes("gemini-3-pro-image");
                     const isEmbeddingModel = requestPath.includes("embedding");
                     const isTtsModel = requestPath.includes("tts");
+                    const isGemini38TtsModel =
+                        requestPath.includes("gemini-3.8-flash-tts") ||
+                        requestPath.includes("gemini-3.8-flash-lite-tts");
                     const toolRelatedKeys = ["tools", "toolConfig", "tool_config", "toolChoice", "tool_choice"];
                     if (isEmbeddingModel || isTtsModel) {
                         // Remove tools
@@ -480,7 +447,9 @@ class RequestProcessor {
                         if (bodyObj.systemInstruction) {
                             delete bodyObj.systemInstruction;
                         }
-                        this._removeStructuredOutputConfig(bodyObj);
+                        this._removeStructuredOutputConfig(bodyObj, {
+                            preserveResponseFormat: isGemini38TtsModel,
+                        });
                     }
 
                     // --- Module 1.5: responseModalities Handling ---
@@ -499,9 +468,7 @@ class RequestProcessor {
                         }
                     }
 
-                    // --- Module 2: Computer-Use Model Filtering ---
-                    // --- Module 3: Robotics Model Filtering ---
-                    const isComputerUseModel = requestSpec.path.includes("computer-use");
+                    // --- Module 2: Robotics Model Filtering ---
                     const isRoboticsModel = requestSpec.path.includes("robotics");
                     if (isGemini25ImageModel) {
                         toolRelatedKeys.forEach(key => {
@@ -512,28 +479,48 @@ class RequestProcessor {
                         }
                     }
                     if (isGemini31FlashLiteImageModel) {
-                        const removedBuiltInTools = this._filterGeminiBuiltInTools(bodyObj, [
-                            "codeExecution",
-                            "code_execution",
-                            "googleMaps",
-                            "google_maps",
-                            "googleSearch",
-                            "google_search",
-                            "googleSearchRetrieval",
-                            "google_search_retrieval",
-                            "urlContext",
-                            "url_context",
-                        ]);
-                        if (removedBuiltInTools > 0) {
-                            Logger.debug(
-                                `Gemini 3.1 Flash Lite Image detected, filtered unsupported built-in tools: ${removedBuiltInTools}`
-                            );
-                        }
+                        toolRelatedKeys.forEach(key => {
+                            if (Object.prototype.hasOwnProperty.call(bodyObj, key)) {
+                                delete bodyObj[key];
+                            }
+                        });
                     }
-                    if (isImageModel || isComputerUseModel || isRoboticsModel) {
+                    if (isGemini31FlashImageModel || isGemini3ProImageModel) {
+                        if (Array.isArray(bodyObj.tools)) {
+                            const searchToolKeys = ["googleSearch", "google_search"];
+                            bodyObj.tools = bodyObj.tools
+                                .map(tool => {
+                                    if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+                                        return null;
+                                    }
+
+                                    return Object.fromEntries(
+                                        searchToolKeys
+                                            .filter(key => Object.prototype.hasOwnProperty.call(tool, key))
+                                            .map(key => [key, tool[key]])
+                                    );
+                                })
+                                .filter(tool => tool && Object.keys(tool).length > 0);
+
+                            if (bodyObj.tools.length === 0) {
+                                delete bodyObj.tools;
+                            }
+                        } else {
+                            delete bodyObj.tools;
+                        }
+
+                        toolRelatedKeys
+                            .filter(key => key !== "tools")
+                            .forEach(key => {
+                                if (Object.prototype.hasOwnProperty.call(bodyObj, key)) {
+                                    delete bodyObj[key];
+                                }
+                            });
+                    }
+                    if (isImageModel || isRoboticsModel) {
                         this._removeStructuredOutputConfig(bodyObj);
                     }
-                    if (isComputerUseModel || isRoboticsModel) {
+                    if (isRoboticsModel) {
                         if (bodyObj.generationConfig?.responseModalities) {
                             delete bodyObj.generationConfig.responseModalities;
                         }
