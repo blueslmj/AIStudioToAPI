@@ -945,8 +945,7 @@ class FormatConverter {
                     }
 
                     if (funcDef.parameters) {
-                        // Use shared _convertSchemaToGemini
-                        declaration.parameters = this._convertSchemaToGemini(funcDef.parameters);
+                        declaration.parametersJsonSchema = funcDef.parameters;
                     }
                     functionDeclarations.push(declaration);
                 }
@@ -2617,7 +2616,7 @@ class FormatConverter {
                     const declaration = { name: tool.name };
                     if (tool.description) declaration.description = tool.description;
                     if (tool.input_schema) {
-                        declaration.parameters = this._convertSchemaToGemini(tool.input_schema);
+                        declaration.parametersJsonSchema = tool.input_schema;
                     }
                     functionDeclarations.push(declaration);
                 }
@@ -3423,7 +3422,7 @@ class FormatConverter {
                     }
 
                     if (funcDef.parameters) {
-                        declaration.parameters = this._convertSchemaToGemini(funcDef.parameters);
+                        declaration.parametersJsonSchema = funcDef.parameters;
                     }
                     functionDeclarations.push(declaration);
                 }
