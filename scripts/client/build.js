@@ -421,7 +421,7 @@ class RequestProcessor {
                 try {
                     const bodyObj = JSON.parse(requestSpec.body);
 
-                    // --- Module 1: Embedding/TTS Model Filtering ---
+                    // --- Module 1: Embedding/TTS/Transcribe/Lyria Model Filtering ---
                     const requestPath = String(requestSpec.path || "");
                     const isImageModel = requestPath.includes("-image") || requestPath.includes("imagen");
                     const isGemini25ImageModel = isImageModel && requestPath.includes("2.5");
@@ -430,11 +430,13 @@ class RequestProcessor {
                     const isGemini3ProImageModel = requestPath.includes("gemini-3-pro-image");
                     const isEmbeddingModel = requestPath.includes("embedding");
                     const isTtsModel = requestPath.includes("tts");
+                    const isTranscribeModel = requestPath.includes("-transcribe");
+                    const isLyria3Model = requestPath.includes("lyria-3");
                     const isGemini38TtsModel =
                         requestPath.includes("gemini-3.8-flash-tts") ||
                         requestPath.includes("gemini-3.8-flash-lite-tts");
                     const toolRelatedKeys = ["tools", "toolConfig", "tool_config", "toolChoice", "tool_choice"];
-                    if (isEmbeddingModel || isTtsModel) {
+                    if (isEmbeddingModel || isTtsModel || isTranscribeModel || isLyria3Model) {
                         // Remove tools
                         toolRelatedKeys.forEach(key => {
                             if (Object.prototype.hasOwnProperty.call(bodyObj, key)) delete bodyObj[key];
@@ -443,8 +445,8 @@ class RequestProcessor {
                         if (bodyObj.generationConfig?.thinkingConfig) {
                             delete bodyObj.generationConfig.thinkingConfig;
                         }
-                        // Remove systemInstruction
-                        if (bodyObj.systemInstruction) {
+                        // Lyria 3 supports systemInstruction; remove it only for the other model families.
+                        if (!isLyria3Model && bodyObj.systemInstruction) {
                             delete bodyObj.systemInstruction;
                         }
                         this._removeStructuredOutputConfig(bodyObj, {
@@ -454,7 +456,7 @@ class RequestProcessor {
 
                     // --- Module 1.5: responseModalities Handling ---
                     // Image: keep as-is (needed for image generation)
-                    // Embedding: remove
+                    // Embedding/Transcribe/Lyria: remove
                     // TTS: force to ["AUDIO"]
                     if (isTtsModel) {
                         if (!bodyObj.generationConfig) {
@@ -462,7 +464,7 @@ class RequestProcessor {
                         }
                         bodyObj.generationConfig.responseModalities = ["AUDIO"];
                         Logger.output("TTS model detected, setting responseModalities to AUDIO");
-                    } else if (isEmbeddingModel) {
+                    } else if (isEmbeddingModel || isTranscribeModel || isLyria3Model) {
                         if (bodyObj.generationConfig?.responseModalities) {
                             delete bodyObj.generationConfig.responseModalities;
                         }
@@ -517,7 +519,7 @@ class RequestProcessor {
                                 }
                             });
                     }
-                    if (isImageModel || isRoboticsModel) {
+                    if (isImageModel) {
                         this._removeStructuredOutputConfig(bodyObj);
                     }
                     if (isRoboticsModel) {
