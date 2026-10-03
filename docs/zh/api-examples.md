@@ -38,14 +38,14 @@ curl -X POST http://localhost:7860/v1/chat/completions \
   }'
 ```
 
-### 🖼️ 生成图片 [官方文档](https://ai.google.dev/gemini-api/docs/image-generation?hl=zh-cn)
+### 🖼️ 生成图片 [官方文档](https://ai.google.dev/gemini-api/docs/generate-content/image-generation?hl=zh-cn)
 
 ```bash
 curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-image",
+    "model": "gemini-3.1-flash-lite-image",
     "messages": [
       {
         "role": "user",
@@ -63,7 +63,7 @@ curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
-    "model": "gemini-2.5-flash-image",
+    "model": "gemini-3.1-flash-lite-image",
     "messages": [
       {
         "role": "user",
@@ -162,10 +162,10 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-flash-lite-latest:stream
   }'
 ```
 
-### 🖼️ 生成图片 [官方文档](https://ai.google.dev/gemini-api/docs/image-generation?hl=zh-cn)
+### 🖼️ 生成图片 [官方文档](https://ai.google.dev/gemini-api/docs/generate-content/image-generation?hl=zh-cn)
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-image:generateContent \
+curl -X POST http://localhost:7860/v1beta/models/gemini-3.1-flash-lite-image:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -185,7 +185,7 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-image:generate
 #### 🫗 流式生成
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-image:streamGenerateContent?alt=sse \
+curl -X POST http://localhost:7860/v1beta/models/gemini-3.1-flash-lite-image:streamGenerateContent?alt=sse \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -202,7 +202,7 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-image:streamGe
   }'
 ```
 
-### 🎵 Lyria 音乐生成 [官方文档](https://ai.google.dev/gemini-api/docs/music-generation?hl=zh-cn)
+### 🎵 Lyria 音乐生成 [官方文档](https://ai.google.dev/gemini-api/docs/generate-content/music-generation?hl=zh-cn)
 
 #### 生成 30 秒音乐片段
 
@@ -242,7 +242,7 @@ curl -X POST http://localhost:7860/v1beta/models/lyria-3.5:generateContent \
   }'
 ```
 
-### 🎧 音频转写 [官方文档](https://ai.google.dev/gemini-api/docs/transcribe?hl=zh-cn)
+### 🎧 音频转写 [官方文档](https://ai.google.dev/gemini-api/docs/generate-content/transcribe?hl=zh-cn)
 
 ```bash
 curl -X POST http://localhost:7860/v1beta/models/gemini-3.5-transcribe:generateContent \
@@ -264,12 +264,12 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-3.5-transcribe:generateC
   }'
 ```
 
-### 🎤 TTS 语音合成 [官方文档](https://ai.google.dev/gemini-api/docs/speech-generation?hl=zh-cn)
+### 🎤 TTS 语音合成 [官方文档](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation?hl=zh-cn)
 
-#### 基础 TTS（默认声音）
+#### 单人语音
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:generateContent \
+curl -X POST http://localhost:7860/v1beta/models/gemini-3.8-flash-tts:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -278,32 +278,10 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:ge
         "role": "user",
         "parts": [
           {
-            "text": "你好，这是一个语音合成测试。"
-          }
-        ]
-      }
-    ],
-    "generationConfig": {
-      "responseModalities": ["AUDIO"]
-    }
-  }'
-```
-
-#### 指定声音
-
-可选声音：`Kore`、`Puck`、`Charon`、`Fenrir`、`Aoede`
-
-```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:generateContent \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key-1" \
-  -d '{
-    "contents": [
-      {
-        "role": "user",
-        "parts": [
-          {
-            "text": "你好，这是一个语音合成测试。"
+            "text": "祝你今天过得愉快！",
+            "speech_metadata": {
+              "style": "欢快且友好"
+            }
           }
         ]
       }
@@ -312,9 +290,7 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:ge
       "responseModalities": ["AUDIO"],
       "speechConfig": {
         "voiceConfig": {
-          "prebuiltVoiceConfig": {
-            "voiceName": "Kore"
-          }
+          "voice": "Kore"
         }
       }
     }
@@ -323,10 +299,10 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:ge
 
 #### 多人对话
 
-对话内容写在 prompt 中，使用 `multiSpeakerVoiceConfig` 配置多个说话者的声音（最多 2 个）。
+多人对话将每个说话者的内容放在独立的 `part` 中，并通过 `speech_metadata.speaker` 与声音配置对应。
 
 ```bash
-curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:generateContent \
+curl -X POST http://localhost:7860/v1beta/models/gemini-3.8-flash-tts:generateContent \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-1" \
   -d '{
@@ -335,7 +311,18 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:ge
         "role": "user",
         "parts": [
           {
-            "text": "TTS the following conversation between Joe and Jane:\nJoe: How are you today Jane?\nJane: I am doing great, thanks for asking!"
+            "text": "Jane，你今天过得怎么样？",
+            "speech_metadata": {
+              "speaker": "Joe",
+              "style": "欢快且友好"
+            }
+          },
+          {
+            "text": "还不错，你呢？准备好测试这些新声音了吗？",
+            "speech_metadata": {
+              "speaker": "Jane",
+              "style": "平静且放松"
+            }
           }
         ]
       }
@@ -349,7 +336,7 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:ge
               "speaker": "Joe",
               "voiceConfig": {
                 "prebuiltVoiceConfig": {
-                  "voiceName": "Charon"
+                  "voiceName": "Puck"
                 }
               }
             },
@@ -367,8 +354,6 @@ curl -X POST http://localhost:7860/v1beta/models/gemini-2.5-flash-preview-tts:ge
     }
   }'
 ```
-
-> 💡 **提示**：TTS 响应返回的是 `audio/L16;codec=pcm;rate=24000` 格式的 base64 编码音频数据，需要解码后转换为 WAV 格式播放。
 
 ### 📐 文本嵌入 (Embeddings) [官方文档](https://ai.google.dev/gemini-api/docs/embeddings?hl=zh-cn)
 
