@@ -210,6 +210,7 @@ This endpoint is forwarded to the Gemini API format endpoint.
 - `GET /v1beta/models`: List available Gemini models.
 - `POST /v1beta/models/{model_name}:generateContent`: Generate content, images, and speech.
 - `POST /v1beta/models/{model_name}:streamGenerateContent`: Stream content, image, and speech generation, supports real and fake streaming.
+- `POST /v1beta/models/{model_name}:countTokens`: Count tokens in the request content.
 - `POST /v1beta/models/{model_name}:embedContent`: Generate a single text embedding vector.
 - `POST /v1beta/models/{model_name}:batchEmbedContents`: Batch generate text embedding vectors.
 
