@@ -2567,6 +2567,291 @@ class FormatConverter {
         };
     }
 
+    _buildClaudeServerToolBlocks(candidate, state = {}, options = {}) {
+        const includeCodeExecution = options.includeCodeExecution !== false;
+        const includeMetadata = options.includeMetadata !== false;
+        const blocks = [];
+
+        if (!state.serverToolSeenKeys) state.serverToolSeenKeys = new Set();
+        if (!state.codeExecutionToolUseIds) state.codeExecutionToolUseIds = new Map();
+        if (!state.serverToolUsage) {
+            state.serverToolUsage = {
+                code_execution_requests: 0,
+                web_fetch_requests: 0,
+                web_search_requests: 0,
+            };
+        }
+
+        const createToolUseId = () => `srvtoolu_${this._generateRequestId()}`;
+
+        if (includeMetadata) {
+            const groundingMetadata = candidate?.groundingMetadata;
+            const queries = this._normalizeWebSearchQueries(groundingMetadata?.webSearchQueries);
+            const groundingChunks = Array.isArray(groundingMetadata?.groundingChunks)
+                ? groundingMetadata.groundingChunks
+                : [];
+            const webResults = [];
+            const webResultKeys = new Set();
+
+            for (const chunk of groundingChunks) {
+                const web = chunk?.web;
+                if (!web || typeof web.uri !== "string" || !web.uri) continue;
+                const key = `${web.uri}\u0000${web.title || web.siteName || ""}`;
+                if (webResultKeys.has(key)) continue;
+                webResultKeys.add(key);
+                webResults.push({
+                    // Gemini grounding does not expose Anthropic's opaque replay payload.
+                    encrypted_content: "",
+                    page_age: null,
+                    title: web.title || web.siteName || web.uri,
+                    type: "web_search_result",
+                    url: web.uri,
+                });
+            }
+
+            if (queries.length > 0 || webResults.length > 0) {
+                const searchKey = `web_search:${JSON.stringify({ queries, webResults })}`;
+                if (!state.serverToolSeenKeys.has(searchKey)) {
+                    state.serverToolSeenKeys.add(searchKey);
+                    const toolUseId = createToolUseId();
+                    blocks.push({
+                        id: toolUseId,
+                        input: { query: queries.join("\n") || "Google Search" },
+                        name: "web_search",
+                        type: "server_tool_use",
+                    });
+                    blocks.push({
+                        content: webResults,
+                        tool_use_id: toolUseId,
+                        type: "web_search_tool_result",
+                    });
+                    // One synthetic server_tool_use block represents the complete
+                    // Gemini grounding operation, even when Gemini reports several queries.
+                    state.serverToolUsage.web_search_requests++;
+                }
+            }
+
+            const urlContextMetadata = candidate?.urlContextMetadata || candidate?.url_context_metadata;
+            const urlMetadata = Array.isArray(urlContextMetadata?.urlMetadata)
+                ? urlContextMetadata.urlMetadata
+                : Array.isArray(urlContextMetadata?.url_metadata)
+                  ? urlContextMetadata.url_metadata
+                  : [];
+
+            for (const metadata of urlMetadata) {
+                const url = metadata?.retrievedUrl || metadata?.retrieved_url;
+                if (typeof url !== "string" || !url) continue;
+                const status = String(metadata?.urlRetrievalStatus || metadata?.url_retrieval_status || "");
+                const fetchKey = `web_fetch:${url}:${status}`;
+                if (state.serverToolSeenKeys.has(fetchKey)) continue;
+                state.serverToolSeenKeys.add(fetchKey);
+
+                const toolUseId = createToolUseId();
+                blocks.push({
+                    id: toolUseId,
+                    input: { url },
+                    name: "web_fetch",
+                    type: "server_tool_use",
+                });
+
+                if (status.includes("SUCCESS")) {
+                    blocks.push({
+                        content: {
+                            content: {
+                                source: {
+                                    // URL Context exposes retrieval status and URL, but not
+                                    // the fetched document body returned to the model.
+                                    data: "",
+                                    media_type: "text/plain",
+                                    type: "text",
+                                },
+                                type: "document",
+                            },
+                            retrieved_at: new Date().toISOString(),
+                            type: "web_fetch_result",
+                            url,
+                        },
+                        tool_use_id: toolUseId,
+                        type: "web_fetch_tool_result",
+                    });
+                } else {
+                    blocks.push({
+                        content: {
+                            error_code: status.includes("UNSAFE") ? "url_not_allowed" : "url_not_accessible",
+                            type: "web_fetch_tool_result_error",
+                        },
+                        tool_use_id: toolUseId,
+                        type: "web_fetch_tool_result",
+                    });
+                }
+                state.serverToolUsage.web_fetch_requests++;
+            }
+        }
+
+        if (includeCodeExecution) {
+            const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+            for (const part of parts) {
+                if (part?.executableCode) {
+                    const executableCode = part.executableCode;
+                    const geminiId = executableCode.id || null;
+                    const seenKey = geminiId ? `code_call:${geminiId}` : null;
+                    if (seenKey && state.serverToolSeenKeys.has(seenKey)) continue;
+
+                    const toolUseId = createToolUseId();
+                    if (seenKey) state.serverToolSeenKeys.add(seenKey);
+                    blocks.push({
+                        id: toolUseId,
+                        input: {
+                            code: executableCode.code || "",
+                            language: String(executableCode.language || "python").toLowerCase(),
+                        },
+                        name: "code_execution",
+                        type: "server_tool_use",
+                    });
+                    if (geminiId) state.codeExecutionToolUseIds.set(geminiId, toolUseId);
+                    state.lastCodeExecutionToolUseId = toolUseId;
+                    state.serverToolUsage.code_execution_requests++;
+                } else if (part?.codeExecutionResult) {
+                    const executionResult = part.codeExecutionResult;
+                    const geminiId = executionResult.id || null;
+                    const seenKey = geminiId ? `code_result:${geminiId}` : null;
+                    if (seenKey && state.serverToolSeenKeys.has(seenKey)) continue;
+
+                    let toolUseId = geminiId ? state.codeExecutionToolUseIds.get(geminiId) : null;
+                    if (!toolUseId) toolUseId = state.lastCodeExecutionToolUseId;
+                    if (!toolUseId) {
+                        toolUseId = createToolUseId();
+                        blocks.push({
+                            id: toolUseId,
+                            input: { code: "", language: "python" },
+                            name: "code_execution",
+                            type: "server_tool_use",
+                        });
+                        state.serverToolUsage.code_execution_requests++;
+                    }
+
+                    if (seenKey) state.serverToolSeenKeys.add(seenKey);
+                    const outcome = String(executionResult.outcome || "");
+                    const succeeded = outcome === "OUTCOME_OK";
+                    blocks.push({
+                        content: {
+                            content: [],
+                            return_code: succeeded ? 0 : outcome === "OUTCOME_DEADLINE_EXCEEDED" ? 124 : 1,
+                            stderr: succeeded ? "" : executionResult.output || "",
+                            stdout: succeeded ? executionResult.output || "" : "",
+                            type: "code_execution_result",
+                        },
+                        tool_use_id: toolUseId,
+                        type: "code_execution_tool_result",
+                    });
+                }
+            }
+        }
+
+        return { blocks, usage: state.serverToolUsage };
+    }
+
+    _buildClaudeWebSearchCitations(candidate) {
+        const groundingMetadata = candidate?.groundingMetadata;
+        const groundingChunks = Array.isArray(groundingMetadata?.groundingChunks)
+            ? groundingMetadata.groundingChunks
+            : [];
+        const groundingSupports = Array.isArray(groundingMetadata?.groundingSupports)
+            ? groundingMetadata.groundingSupports
+            : [];
+        const citations = [];
+        const seenCitationKeys = new Set();
+
+        for (let supportIndex = 0; supportIndex < groundingSupports.length; supportIndex++) {
+            const support = groundingSupports[supportIndex];
+            const chunkIndices = Array.isArray(support?.groundingChunkIndices) ? support.groundingChunkIndices : [];
+            const segmentText =
+                typeof support?.segment?.text === "string" && support.segment.text
+                    ? [...support.segment.text].slice(0, 150).join("")
+                    : "";
+
+            for (const chunkIndex of chunkIndices) {
+                const web = groundingChunks[chunkIndex]?.web;
+                if (!web || typeof web.uri !== "string" || !web.uri) continue;
+
+                const title = web.title || web.siteName || null;
+                const citationKey = `${chunkIndex}\u0000${segmentText}`;
+                if (seenCitationKeys.has(citationKey)) continue;
+                seenCitationKeys.add(citationKey);
+
+                citations.push({
+                    cited_text: segmentText || title || web.uri,
+                    // Gemini exposes the source mapping but not Anthropic's opaque
+                    // encrypted index. Keep a stable, non-empty proxy-local value so
+                    // Claude clients can retain the citation object across the stream.
+                    encrypted_index: `google_grounding_${chunkIndex}_${supportIndex}`,
+                    title,
+                    type: "web_search_result_location",
+                    url: web.uri,
+                });
+            }
+        }
+
+        return citations;
+    }
+
+    _accumulateClaudeServerToolMetadata(candidate, state) {
+        if (!state.claudeServerToolMetadata) {
+            state.claudeServerToolMetadata = {
+                groundingChunkKeys: new Set(),
+                groundingChunks: [],
+                groundingSupportKeys: new Set(),
+                groundingSupports: [],
+                urlMetadata: new Map(),
+                webSearchQueries: new Set(),
+            };
+        }
+
+        const accumulated = state.claudeServerToolMetadata;
+        const groundingMetadata = candidate?.groundingMetadata;
+        for (const query of this._normalizeWebSearchQueries(groundingMetadata?.webSearchQueries)) {
+            accumulated.webSearchQueries.add(query);
+        }
+        if (Array.isArray(groundingMetadata?.groundingChunks)) {
+            for (const chunk of groundingMetadata.groundingChunks) {
+                const key = JSON.stringify(chunk);
+                if (accumulated.groundingChunkKeys.has(key)) continue;
+                accumulated.groundingChunkKeys.add(key);
+                accumulated.groundingChunks.push(chunk);
+            }
+        }
+        if (Array.isArray(groundingMetadata?.groundingSupports)) {
+            for (const support of groundingMetadata.groundingSupports) {
+                const key = JSON.stringify(support);
+                if (accumulated.groundingSupportKeys.has(key)) continue;
+                accumulated.groundingSupportKeys.add(key);
+                accumulated.groundingSupports.push(support);
+            }
+        }
+
+        const urlContextMetadata = candidate?.urlContextMetadata || candidate?.url_context_metadata;
+        const urlMetadata = Array.isArray(urlContextMetadata?.urlMetadata)
+            ? urlContextMetadata.urlMetadata
+            : Array.isArray(urlContextMetadata?.url_metadata)
+              ? urlContextMetadata.url_metadata
+              : [];
+        for (const metadata of urlMetadata) {
+            const url = metadata?.retrievedUrl || metadata?.retrieved_url;
+            if (typeof url === "string" && url) accumulated.urlMetadata.set(url, metadata);
+        }
+
+        return {
+            groundingMetadata: {
+                groundingChunks: accumulated.groundingChunks,
+                groundingSupports: accumulated.groundingSupports,
+                webSearchQueries: [...accumulated.webSearchQueries],
+            },
+            urlContextMetadata: {
+                urlMetadata: [...accumulated.urlMetadata.values()],
+            },
+        };
+    }
+
     // ==================== Claude API Format Conversion ====================
 
     /**
@@ -3236,6 +3521,75 @@ class FormatConverter {
             streamState.textBlockStopped = true;
         };
 
+        const emitServerToolBlocks = blocks => {
+            for (const block of blocks) {
+                closeThinkingBlock();
+                closeTextBlock();
+
+                const index = streamState.contentBlockIndex;
+                if (block.type === "server_tool_use") {
+                    events.push({
+                        content_block: {
+                            id: block.id,
+                            input: {},
+                            name: block.name,
+                            type: block.type,
+                        },
+                        index,
+                        type: "content_block_start",
+                    });
+                    events.push({
+                        delta: {
+                            partial_json: JSON.stringify(block.input || {}),
+                            type: "input_json_delta",
+                        },
+                        index,
+                        type: "content_block_delta",
+                    });
+                } else {
+                    events.push({
+                        content_block: block,
+                        index,
+                        type: "content_block_start",
+                    });
+                }
+                events.push({ index, type: "content_block_stop" });
+                streamState.contentBlockIndex++;
+            }
+        };
+
+        const emitTextContent = (text, citations = []) => {
+            if (!text && citations.length === 0) return;
+
+            closeThinkingBlock();
+            if (!streamState.textBlockStarted || streamState.textBlockStopped) {
+                events.push({
+                    content_block: { text: "", type: "text" },
+                    index: streamState.contentBlockIndex,
+                    type: "content_block_start",
+                });
+                streamState.textBlockStarted = true;
+                streamState.textBlockStopped = false;
+                streamState.textBlockIndex = streamState.contentBlockIndex;
+                streamState.contentBlockIndex++;
+            }
+
+            if (text) {
+                events.push({
+                    delta: { text, type: "text_delta" },
+                    index: streamState.textBlockIndex,
+                    type: "content_block_delta",
+                });
+            }
+            for (const citation of citations) {
+                events.push({
+                    delta: { citation, type: "citations_delta" },
+                    index: streamState.textBlockIndex,
+                    type: "content_block_delta",
+                });
+            }
+        };
+
         // Send message_start event once
         if (!streamState.messageStartSent) {
             events.push({
@@ -3257,9 +3611,14 @@ class FormatConverter {
             streamState.messageStartSent = true;
         }
 
+        // Gemini may split grounding and URL metadata across streaming chunks.
+        // Accumulate it so one Gemini operation becomes one complete Claude pair.
+        const accumulatedServerToolMetadata = this._accumulateClaudeServerToolMetadata(candidate, streamState);
+        const candidateParts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+
         // Process content parts
-        if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of candidate.content.parts) {
+        if (candidateParts.length > 0) {
+            for (const part of candidateParts) {
                 if (part.thought === true && part.text) {
                     // Thinking content
                     closeTextBlock();
@@ -3283,23 +3642,7 @@ class FormatConverter {
                     }
                 } else if (part.text) {
                     // Regular text content
-                    closeThinkingBlock();
-                    if (!streamState.textBlockStarted || streamState.textBlockStopped) {
-                        events.push({
-                            content_block: { text: "", type: "text" },
-                            index: streamState.contentBlockIndex,
-                            type: "content_block_start",
-                        });
-                        streamState.textBlockStarted = true;
-                        streamState.textBlockStopped = false;
-                        streamState.textBlockIndex = streamState.contentBlockIndex;
-                        streamState.contentBlockIndex++;
-                    }
-                    events.push({
-                        delta: { text: part.text, type: "text_delta" },
-                        index: streamState.textBlockIndex,
-                        type: "content_block_delta",
-                    });
+                    emitTextContent(part.text);
                 } else if (part.inlineData) {
                     // Image output - convert to markdown image format for streaming
                     // Close thinking block if open
@@ -3324,6 +3667,11 @@ class FormatConverter {
                         type: "content_block_delta",
                     });
                     this.logger.info("[Adapter] Successfully parsed image from streaming response chunk.");
+                } else if (part.executableCode || part.codeExecutionResult) {
+                    const serverTools = this._buildClaudeServerToolBlocks({ content: { parts: [part] } }, streamState, {
+                        includeMetadata: false,
+                    });
+                    emitServerToolBlocks(serverTools.blocks);
                 } else if (part.functionCall) {
                     // Tool use
                     closeThinkingBlock();
@@ -3357,6 +3705,16 @@ class FormatConverter {
             }
         }
 
+        if (candidate.finishReason) {
+            const citations = this._buildClaudeWebSearchCitations(accumulatedServerToolMetadata);
+            emitTextContent("", citations);
+
+            const metadataServerTools = this._buildClaudeServerToolBlocks(accumulatedServerToolMetadata, streamState, {
+                includeCodeExecution: false,
+            });
+            emitServerToolBlocks(metadataServerTools.blocks);
+        }
+
         // Handle finish
         if (candidate.finishReason) {
             // Close any open blocks
@@ -3373,6 +3731,9 @@ class FormatConverter {
                 stopReason = "end_turn";
             }
 
+            const serverToolUse = Object.fromEntries(
+                Object.entries(streamState.serverToolUsage || {}).filter(([, count]) => count > 0)
+            );
             events.push({
                 delta: {
                     stop_reason: stopReason,
@@ -3381,6 +3742,7 @@ class FormatConverter {
                 type: "message_delta",
                 usage: {
                     output_tokens: streamState.outputTokens || 0,
+                    ...(Object.keys(serverToolUse).length > 0 ? { server_tool_use: serverToolUse } : {}),
                 },
             });
 
@@ -3432,6 +3794,11 @@ class FormatConverter {
         }
 
         let hasToolUse = false;
+        const serverToolState = {};
+        const metadataServerTools = this._buildClaudeServerToolBlocks(candidate, serverToolState, {
+            includeCodeExecution: false,
+        });
+        content.push(...metadataServerTools.blocks);
 
         if (candidate.content && Array.isArray(candidate.content.parts)) {
             for (const part of candidate.content.parts) {
@@ -3452,6 +3819,13 @@ class FormatConverter {
                         text: `![Generated Image](data:${part.inlineData.mimeType};base64,${part.inlineData.data})`,
                         type: "text",
                     });
+                } else if (part.executableCode || part.codeExecutionResult) {
+                    const serverTools = this._buildClaudeServerToolBlocks(
+                        { content: { parts: [part] } },
+                        serverToolState,
+                        { includeMetadata: false }
+                    );
+                    content.push(...serverTools.blocks);
                 } else if (part.functionCall) {
                     hasToolUse = true;
                     content.push({
@@ -3464,6 +3838,12 @@ class FormatConverter {
             }
         }
 
+        const webSearchCitations = this._buildClaudeWebSearchCitations(candidate);
+        if (webSearchCitations.length > 0) {
+            const citedTextBlock = [...content].reverse().find(block => block.type === "text");
+            if (citedTextBlock) citedTextBlock.citations = webSearchCitations;
+        }
+
         // Determine stop reason
         let stopReason = "end_turn";
         if (hasToolUse) {
@@ -3473,6 +3853,10 @@ class FormatConverter {
         } else if (candidate.finishReason === "SAFETY") {
             stopReason = "end_turn"; // Claude doesn't have a direct equivalent
         }
+
+        const serverToolUse = Object.fromEntries(
+            Object.entries(serverToolState.serverToolUsage || {}).filter(([, count]) => count > 0)
+        );
 
         return {
             content: content.length > 0 ? content : [{ text: "", type: "text" }],
@@ -3486,6 +3870,7 @@ class FormatConverter {
                 input_tokens: (usage.promptTokenCount || 0) + (usage.toolUsePromptTokenCount || 0),
                 // Match OpenAI logic: sum candidates tokens + thoughts tokens
                 output_tokens: (usage.candidatesTokenCount || 0) + (usage.thoughtsTokenCount || 0),
+                ...(Object.keys(serverToolUse).length > 0 ? { server_tool_use: serverToolUse } : {}),
             },
         };
     }
