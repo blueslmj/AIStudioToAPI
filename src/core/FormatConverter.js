@@ -520,7 +520,6 @@ class FormatConverter {
             "const",
             "$comment",
             "enumDescriptions",
-            "default",
             "examples",
             "$defs",
             "id",
