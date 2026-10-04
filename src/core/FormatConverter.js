@@ -2806,6 +2806,7 @@ class FormatConverter {
                         caller: { type: "direct" },
                         content: {
                             content: {
+                                citations: null,
                                 source: {
                                     // URL Context exposes retrieval status and URL, but not
                                     // the fetched document body returned to the model.
@@ -2813,6 +2814,7 @@ class FormatConverter {
                                     media_type: "text/plain",
                                     type: "text",
                                 },
+                                title: null,
                                 type: "document",
                             },
                             retrieved_at: new Date().toISOString(),
