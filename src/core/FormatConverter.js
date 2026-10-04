@@ -3944,7 +3944,9 @@ class FormatConverter {
 
             for (const tool of tools) {
                 if (tool.type === "web_search_preview" || tool.type === "web_search") {
-                    hasWebSearch = true;
+                    if (tool.external_web_access !== false) {
+                        hasWebSearch = true;
+                    }
                 } else if (tool.type === "code_interpreter") {
                     hasCodeExecution = true;
                 } else if (tool.type === "file_search") {
