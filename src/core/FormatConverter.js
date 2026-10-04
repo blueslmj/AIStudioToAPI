@@ -303,6 +303,63 @@ class FormatConverter {
     }
 
     /**
+     * Resolve Responses API allowed_tools selectors against the full tool
+     * definitions. Selectors only identify tools and do not carry schemas or
+     * descriptions, so they must not be forwarded as declarations themselves.
+     *
+     * @param {Array<object>} tools - Full Responses API tool definitions
+     * @param {Array<object>} selectors - tool_choice.tools selectors for allowed_tools
+     * @returns {Array<object>} Selected full tool definitions
+     * @private
+     */
+    _filterResponseToolsBySelectors(tools, selectors) {
+        const definitions = Array.isArray(tools) ? tools : [];
+        const allowedSelectors = Array.isArray(selectors)
+            ? selectors.filter(selector => selector && typeof selector === "object")
+            : [];
+
+        const matchesSelector = (tool, selector, namespace = null) => {
+            if (!tool || !selector || tool.type !== selector.type) return false;
+            const toolName = tool.name ?? tool.function?.name;
+            const selectorName = selector.name ?? selector.function?.name;
+            if (toolName !== undefined && toolName !== selectorName) return false;
+            if (toolName === undefined && selectorName !== undefined) return false;
+            if (namespace !== null && selector.namespace !== namespace) return false;
+            if (namespace === null && selector.namespace !== undefined) return false;
+            if (selector.server_label !== undefined && tool.server_label !== selector.server_label) return false;
+            return true;
+        };
+
+        const selectedTools = [];
+        for (const tool of definitions) {
+            if (!tool || typeof tool !== "object") continue;
+
+            if (tool.type !== "namespace") {
+                if (allowedSelectors.some(selector => matchesSelector(tool, selector))) {
+                    selectedTools.push(tool);
+                }
+                continue;
+            }
+
+            if (allowedSelectors.some(selector => matchesSelector(tool, selector))) {
+                selectedTools.push(tool);
+                continue;
+            }
+
+            const nestedTools = Array.isArray(tool.tools)
+                ? tool.tools.filter(nestedTool =>
+                      allowedSelectors.some(selector => matchesSelector(nestedTool, selector, tool.name))
+                  )
+                : [];
+            if (nestedTools.length > 0) {
+                selectedTools.push({ ...tool, tools: nestedTools });
+            }
+        }
+
+        return selectedTools;
+    }
+
+    /**
      * Ensure thoughtSignature is present in Gemini native format requests
      * This handles direct Gemini API calls where functionCall may lack thoughtSignature
      * Note: Only functionCall needs thoughtSignature, functionResponse does NOT need it
@@ -4045,19 +4102,17 @@ class FormatConverter {
 
         const toolChoice = responseBody.tool_choice;
 
-        // `tool_choice: {type:"allowed_tools", tools:[...]}` can provide the
-        // effective tool set. Flatten namespace tools before translating both
-        // declarations and historical function_call items so Gemini sees one
-        // consistent internal function name in both places.
+        // `tool_choice: {type:"allowed_tools", tools:[...]}` contains selectors,
+        // not full tool definitions. Resolve those selectors against responseBody.tools
+        // before flattening namespace tools so schemas and descriptions are preserved.
         let effectiveTools = responseBody.tools;
         if (
             toolChoice &&
             typeof toolChoice === "object" &&
             toolChoice.type === "allowed_tools" &&
-            Array.isArray(toolChoice.tools) &&
-            toolChoice.tools.length > 0
+            Array.isArray(toolChoice.tools)
         ) {
-            effectiveTools = toolChoice.tools;
+            effectiveTools = this._filterResponseToolsBySelectors(responseBody.tools, toolChoice.tools);
         }
         const responseFunctionTools = this._flattenResponseFunctionTools(effectiveTools);
         const toGeminiFunctionName = (name, namespace) => {
@@ -4575,7 +4630,7 @@ class FormatConverter {
                 }
             } else if (typeof toolChoice === "object") {
                 if (toolChoice.type === "allowed_tools") {
-                    // Constrain available tools. We already used toolChoice.tools as effectiveTools above.
+                    // Constrain available tools. effectiveTools contains the full definitions selected above.
                     // Gemini functionCallingConfig only applies to function declarations, not hosted/built-in tools.
                     const allowedToolsHaveHostedTool =
                         Array.isArray(tools) && tools.some(t => t && responseHostedToolTypes.has(t.type));
