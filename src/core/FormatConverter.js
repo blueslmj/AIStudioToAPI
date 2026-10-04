@@ -3040,6 +3040,21 @@ class FormatConverter {
             return { error: responseContent };
         };
 
+        const claudeServerToolBlockTypes = new Set([
+            "server_tool_use",
+            "web_search_tool_result",
+            "web_fetch_tool_result",
+            "code_execution_tool_result",
+        ]);
+
+        const convertClaudeServerToolBlock = block => ({
+            text: `[Claude server tool history: ${block.type}]\n${JSON.stringify(
+                block,
+                (key, value) => (key === "encrypted_content" ? undefined : value),
+                2
+            )}`,
+        });
+
         // Convert Claude messages to Google format
         for (const message of claudeBody.messages) {
             if (message.role === "system") continue;
@@ -3126,6 +3141,10 @@ class FormatConverter {
                         googleParts.push({ text: block.thinking || "", thought: true });
                     } else if (block.type === "text") {
                         googleParts.push({ text: block.text });
+                    } else if (claudeServerToolBlockTypes.has(block.type)) {
+                        // Server tools have already executed. Preserve their assistant-turn
+                        // history as model context without asking Gemini to execute them again.
+                        googleParts.push(convertClaudeServerToolBlock(block));
                     }
                 }
             }
