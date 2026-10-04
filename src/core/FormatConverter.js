@@ -2726,6 +2726,22 @@ class FormatConverter {
             return ensureGeminiFunctionResponseObject(content ?? { result: "" });
         };
 
+        const normalizeClaudeToolResultResponse = toolResult => {
+            const responseContent = normalizeClaudeToolResultContent(toolResult.content);
+            if (toolResult.is_error !== true) return responseContent;
+
+            if (Object.prototype.hasOwnProperty.call(responseContent, "error")) {
+                return responseContent;
+            }
+            if (
+                Object.keys(responseContent).length === 1 &&
+                Object.prototype.hasOwnProperty.call(responseContent, "result")
+            ) {
+                return { error: responseContent.result };
+            }
+            return { error: responseContent };
+        };
+
         // Convert Claude messages to Google format
         for (const message of claudeBody.messages) {
             if (message.role === "system") continue;
@@ -2737,7 +2753,7 @@ class FormatConverter {
                 const toolResults = message.content.filter(block => block.type === "tool_result");
                 if (toolResults.length > 0) {
                     for (const toolResult of toolResults) {
-                        const responseContent = normalizeClaudeToolResultContent(toolResult.content);
+                        const responseContent = normalizeClaudeToolResultResponse(toolResult);
 
                         // Resolve function name using the map
                         const toolUseId = toolResult.tool_use_id;
@@ -2752,6 +2768,7 @@ class FormatConverter {
 
                         pendingToolParts.push({
                             functionResponse: {
+                                ...(toolUseId ? { id: toolUseId } : {}),
                                 name: functionName,
                                 response: responseContent,
                             },
@@ -2795,6 +2812,7 @@ class FormatConverter {
                         const functionCallPart = {
                             functionCall: {
                                 args: block.input || {},
+                                ...(block.id ? { id: block.id } : {}),
                                 name: block.name,
                             },
                         };
@@ -2805,8 +2823,9 @@ class FormatConverter {
                         googleParts.push(functionCallPart);
                     } else if (block.type === "thinking") {
                         // Claude thinking block -> Gemini thought
-                        const thoughtPart = { text: block.thinking, thought: true };
-                        googleParts.push(thoughtPart);
+                        // Compatibility APIs intentionally do not accept external
+                        // signatures because their provenance cannot be verified.
+                        googleParts.push({ text: block.thinking || "", thought: true });
                     } else if (block.type === "text") {
                         googleParts.push({ text: block.text });
                     }
@@ -2894,17 +2913,36 @@ class FormatConverter {
 
         const thinkingParam = claudeBody.thinking || claudeBody.metadata?.thinking;
 
-        // Check if thinking is enabled:
-        // 1. metadata style: { enabled: true }
-        // 2. top-level style: { type: "enabled" }
-        const isThinkingEnabled = thinkingParam && (thinkingParam.enabled === true || thinkingParam.type === "enabled");
+        // Claude supports legacy/manual thinking plus the newer adaptive and
+        // between-tools modes. Gemini cannot reproduce every scheduling detail,
+        // so this adapter only preserves whether thinking is enabled.
+        const thinkingType = thinkingParam?.type;
+        const isThinkingEnabled =
+            thinkingParam &&
+            (thinkingParam.enabled === true ||
+                thinkingType === "enabled" ||
+                thinkingType === "adaptive" ||
+                thinkingType === "between_tools");
+        const isThinkingDisabled = thinkingType === "disabled" || thinkingParam?.enabled === false;
 
         if (isThinkingEnabled) {
-            thinkingConfig = { includeThoughts: true };
+            thinkingConfig = { includeThoughts: thinkingParam.display !== "omitted" };
             if (thinkingParam.budget_tokens) {
                 // Gemini doesn't have budget_tokens, but we can log it
                 this.logger.debug(`[Adapter] Claude thinking budget_tokens: ${thinkingParam.budget_tokens}`);
             }
+        } else if (isThinkingDisabled) {
+            thinkingConfig = { includeThoughts: false };
+        }
+
+        // Anthropic effort values do not have exact Gemini equivalents. When no
+        // recognized thinking mode has already made the decision, treat effort as
+        // an enable signal without mapping its strength. Explicit disabled and
+        // display:"omitted" settings therefore keep their precedence.
+        const claudeEffort = claudeBody.output_config?.effort;
+        if (!thinkingConfig && typeof claudeEffort === "string" && claudeEffort.length > 0) {
+            thinkingConfig = { includeThoughts: true };
+            this.logger.debug(`[Adapter] Claude output_config.effort enables thinking: ${claudeEffort}`);
         }
 
         // Force thinking mode (only set includeThoughts=true when missing)
@@ -3178,6 +3216,26 @@ class FormatConverter {
 
         const events = [];
 
+        const closeThinkingBlock = () => {
+            if (!streamState.thinkingBlockStarted || streamState.thinkingBlockStopped) return;
+
+            events.push({
+                index: streamState.thinkingBlockIndex,
+                type: "content_block_stop",
+            });
+            streamState.thinkingBlockStopped = true;
+        };
+
+        const closeTextBlock = () => {
+            if (!streamState.textBlockStarted || streamState.textBlockStopped) return;
+
+            events.push({
+                index: streamState.textBlockIndex,
+                type: "content_block_stop",
+            });
+            streamState.textBlockStopped = true;
+        };
+
         // Send message_start event once
         if (!streamState.messageStartSent) {
             events.push({
@@ -3204,37 +3262,36 @@ class FormatConverter {
             for (const part of candidate.content.parts) {
                 if (part.thought === true && part.text) {
                     // Thinking content
-                    if (!streamState.thinkingBlockStarted) {
+                    closeTextBlock();
+                    if (!streamState.thinkingBlockStarted || streamState.thinkingBlockStopped) {
                         events.push({
                             content_block: { thinking: "", type: "thinking" },
                             index: streamState.contentBlockIndex,
                             type: "content_block_start",
                         });
                         streamState.thinkingBlockStarted = true;
+                        streamState.thinkingBlockStopped = false;
                         streamState.thinkingBlockIndex = streamState.contentBlockIndex;
                         streamState.contentBlockIndex++;
                     }
-                    events.push({
-                        delta: { thinking: part.text, type: "thinking_delta" },
-                        index: streamState.thinkingBlockIndex,
-                        type: "content_block_delta",
-                    });
+                    if (part.text) {
+                        events.push({
+                            delta: { thinking: part.text, type: "thinking_delta" },
+                            index: streamState.thinkingBlockIndex,
+                            type: "content_block_delta",
+                        });
+                    }
                 } else if (part.text) {
                     // Regular text content
-                    if (streamState.thinkingBlockStarted && !streamState.thinkingBlockStopped) {
-                        events.push({
-                            index: streamState.thinkingBlockIndex,
-                            type: "content_block_stop",
-                        });
-                        streamState.thinkingBlockStopped = true;
-                    }
-                    if (!streamState.textBlockStarted) {
+                    closeThinkingBlock();
+                    if (!streamState.textBlockStarted || streamState.textBlockStopped) {
                         events.push({
                             content_block: { text: "", type: "text" },
                             index: streamState.contentBlockIndex,
                             type: "content_block_start",
                         });
                         streamState.textBlockStarted = true;
+                        streamState.textBlockStopped = false;
                         streamState.textBlockIndex = streamState.contentBlockIndex;
                         streamState.contentBlockIndex++;
                     }
@@ -3246,21 +3303,16 @@ class FormatConverter {
                 } else if (part.inlineData) {
                     // Image output - convert to markdown image format for streaming
                     // Close thinking block if open
-                    if (streamState.thinkingBlockStarted && !streamState.thinkingBlockStopped) {
-                        events.push({
-                            index: streamState.thinkingBlockIndex,
-                            type: "content_block_stop",
-                        });
-                        streamState.thinkingBlockStopped = true;
-                    }
+                    closeThinkingBlock();
                     // Start text block if not started
-                    if (!streamState.textBlockStarted) {
+                    if (!streamState.textBlockStarted || streamState.textBlockStopped) {
                         events.push({
                             content_block: { text: "", type: "text" },
                             index: streamState.contentBlockIndex,
                             type: "content_block_start",
                         });
                         streamState.textBlockStarted = true;
+                        streamState.textBlockStopped = false;
                         streamState.textBlockIndex = streamState.contentBlockIndex;
                         streamState.contentBlockIndex++;
                     }
@@ -3274,6 +3326,8 @@ class FormatConverter {
                     this.logger.info("[Adapter] Successfully parsed image from streaming response chunk.");
                 } else if (part.functionCall) {
                     // Tool use
+                    closeThinkingBlock();
+                    closeTextBlock();
                     const toolUseId = `toolu_${this._generateRequestId()}`;
                     events.push({
                         content_block: {
@@ -3306,20 +3360,8 @@ class FormatConverter {
         // Handle finish
         if (candidate.finishReason) {
             // Close any open blocks
-            if (streamState.textBlockStarted && !streamState.textBlockStopped) {
-                events.push({
-                    index: streamState.textBlockIndex,
-                    type: "content_block_stop",
-                });
-                streamState.textBlockStopped = true;
-            }
-            if (streamState.thinkingBlockStarted && !streamState.thinkingBlockStopped) {
-                events.push({
-                    index: streamState.thinkingBlockIndex,
-                    type: "content_block_stop",
-                });
-                streamState.thinkingBlockStopped = true;
-            }
+            closeTextBlock();
+            closeThinkingBlock();
 
             // Determine stop reason
             let stopReason = "end_turn";
@@ -3395,7 +3437,6 @@ class FormatConverter {
             for (const part of candidate.content.parts) {
                 if (part.thought === true && part.text) {
                     const thinkingBlock = {
-                        signature: part.thoughtSignature || FormatConverter.DUMMY_THOUGHT_SIGNATURE,
                         thinking: part.text,
                         type: "thinking",
                     };
