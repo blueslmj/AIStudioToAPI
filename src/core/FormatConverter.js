@@ -1462,6 +1462,7 @@ class FormatConverter {
             streamState.webSearchCallOrder = [];
             streamState.messageAnnotations = [];
             streamState.messageAnnotationKeys = Object.create(null);
+            streamState.messagePartRanges = new Map();
             streamState.groundingChunks = [];
             streamState.groundingSupports = [];
             streamState.webSearchQueries = [];
@@ -1799,13 +1800,50 @@ class FormatConverter {
                 return;
             }
 
+            const candidateParts = Array.isArray(candidate.content?.parts) ? candidate.content.parts : [];
+            const candidatePartRanges = new Map();
+            let candidateTextOffset = streamState.messageText.length;
+            let imageNoticePending = !streamState.imageOutputSuppressedNoticeSent;
+            for (let partIndex = 0; partIndex < candidateParts.length; partIndex++) {
+                const part = candidateParts[partIndex];
+                if (part?.thought === true) continue;
+                if (typeof part?.text === "string" && part.text) {
+                    const currentPartRange = {
+                        startIndex: candidateTextOffset,
+                        text: part.text,
+                    };
+                    candidatePartRanges.set(partIndex, currentPartRange);
+                    const accumulatedPartRange = streamState.messagePartRanges.get(partIndex);
+                    if (
+                        accumulatedPartRange &&
+                        accumulatedPartRange.startIndex + accumulatedPartRange.text.length === candidateTextOffset
+                    ) {
+                        accumulatedPartRange.text += part.text;
+                    } else {
+                        streamState.messagePartRanges.set(partIndex, { ...currentPartRange });
+                    }
+                    candidateTextOffset += part.text.length;
+                } else if (part?.inlineData && imageNoticePending) {
+                    candidateTextOffset +=
+                        "[Image output omitted: Responses API image outputs are disabled by this proxy.]".length;
+                    imageNoticePending = false;
+                }
+            }
+
             const candidateGrounding = candidate.groundingMetadata;
             if (candidateGrounding) {
                 if (Array.isArray(candidateGrounding.groundingChunks)) {
                     streamState.groundingChunks.push(...candidateGrounding.groundingChunks);
                 }
                 if (Array.isArray(candidateGrounding.groundingSupports)) {
-                    streamState.groundingSupports.push(...candidateGrounding.groundingSupports);
+                    streamState.groundingSupports.push(
+                        ...candidateGrounding.groundingSupports.map(support => ({
+                            ...support,
+                            _responseTextPartRange:
+                                candidatePartRanges.get(support?.segment?.partIndex) ||
+                                streamState.messagePartRanges.get(support?.segment?.partIndex),
+                        }))
+                    );
                 }
                 streamState.webSearchQueries = this._normalizeWebSearchQueries([
                     ...streamState.webSearchQueries,
@@ -1833,8 +1871,8 @@ class FormatConverter {
             }
 
             // Parts -> SSE events
-            if (candidate.content && Array.isArray(candidate.content.parts)) {
-                for (const part of candidate.content.parts) {
+            if (candidateParts.length > 0) {
+                for (const part of candidateParts) {
                     // The Responses API exposes reasoning summaries via `summary` + `response.reasoning_summary_text.*`.
                     // Map Gemini "thought" parts to reasoning *summary* to match official expectations.
                     if (part?.thought === true) {
@@ -2268,16 +2306,22 @@ class FormatConverter {
 
         const output = [];
         let messageContent = "";
+        const messagePartRanges = new Map();
         let reasoningContent = "";
         let webSearchQueries = [];
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of candidate.content.parts) {
+            for (let partIndex = 0; partIndex < candidate.content.parts.length; partIndex++) {
+                const part = candidate.content.parts[partIndex];
                 // Responses API supports reasoning output items; map Gemini "thought" parts into a reasoning *summary*.
                 if (part?.thought === true) {
                     if (part?.text) reasoningContent += part.text;
                     continue;
                 } else if (part.text) {
                     // Regular text content
+                    messagePartRanges.set(partIndex, {
+                        startIndex: messageContent.length,
+                        text: part.text,
+                    });
                     messageContent += part.text;
                 } else if (part.inlineData) {
                     // Responses API image outputs are intentionally suppressed by this proxy; preserve a text note.
@@ -2334,7 +2378,7 @@ class FormatConverter {
             });
         }
 
-        const grounding = this._extractResponseWebSearchGrounding(candidate, messageContent);
+        const grounding = this._extractResponseWebSearchGrounding(candidate, messageContent, messagePartRanges);
         if (webSearchQueries.length === 0) webSearchQueries = grounding.queries;
         if (
             webSearchQueries.length > 0 ||
@@ -2463,7 +2507,7 @@ class FormatConverter {
         return stringIndex;
     }
 
-    _extractResponseWebSearchGrounding(candidate, messageText = "") {
+    _extractResponseWebSearchGrounding(candidate, messageText = "", messagePartRanges = null) {
         const metadata = candidate?.groundingMetadata || {};
         const queries = this._normalizeWebSearchQueries(metadata.webSearchQueries);
         const chunks = Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks : [];
@@ -2474,24 +2518,34 @@ class FormatConverter {
         for (const support of supports) {
             const segment = support?.segment || {};
             const segmentText = typeof segment.text === "string" ? segment.text : "";
+            const partRange =
+                support?._responseTextPartRange ||
+                (Number.isInteger(segment.partIndex) && messagePartRanges instanceof Map
+                    ? messagePartRanges.get(segment.partIndex)
+                    : null);
+            const partText = partRange?.text || messageText;
+            const partBaseIndex = Number.isInteger(partRange?.startIndex) ? partRange.startIndex : 0;
             const segmentStartByte = Number.isFinite(segment.startIndex) ? Math.max(0, segment.startIndex) : 0;
             const segmentEndByte = Number.isFinite(segment.endIndex)
                 ? Math.max(segmentStartByte, segment.endIndex)
                 : segmentStartByte + Buffer.byteLength(segmentText, "utf8");
-            let startIndex = this._utf8ByteOffsetToStringIndex(messageText, segmentStartByte);
-            let endIndex = this._utf8ByteOffsetToStringIndex(messageText, segmentEndByte);
+            let localStartIndex = this._utf8ByteOffsetToStringIndex(partText, segmentStartByte);
+            let localEndIndex = this._utf8ByteOffsetToStringIndex(partText, segmentEndByte);
 
             // Gemini grounding offsets are UTF-8 byte offsets. Resolve the exact segment text as
-            // an additional safeguard before converting to OpenAI character offsets.
-            if (segmentText && messageText.slice(startIndex, endIndex) !== segmentText) {
-                let matchedIndex = messageText.indexOf(segmentText, Math.max(0, startIndex - 128));
-                if (matchedIndex < 0) matchedIndex = messageText.indexOf(segmentText);
+            // an additional safeguard, scoped to the selected Part so repeated text in an earlier
+            // Part cannot steal the citation.
+            if (segmentText && partText.slice(localStartIndex, localEndIndex) !== segmentText) {
+                let matchedIndex = partText.indexOf(segmentText, Math.max(0, localStartIndex - 128));
+                if (matchedIndex < 0) matchedIndex = partText.indexOf(segmentText);
                 if (matchedIndex >= 0) {
-                    startIndex = matchedIndex;
-                    endIndex = matchedIndex + segmentText.length;
+                    localStartIndex = matchedIndex;
+                    localEndIndex = matchedIndex + segmentText.length;
                 }
             }
 
+            let startIndex = partBaseIndex + localStartIndex;
+            let endIndex = partBaseIndex + localEndIndex;
             startIndex = Math.min(startIndex, messageText.length);
             endIndex = Math.min(Math.max(startIndex, endIndex), messageText.length);
             const openAIStartIndex = Array.from(messageText.slice(0, startIndex)).length;
