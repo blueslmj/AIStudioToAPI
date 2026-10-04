@@ -1456,6 +1456,13 @@ class FormatConverter {
             streamState.reasoningItem = null;
             streamState.reasoningSummaryText = "";
             streamState.reasoningSummaryPartAdded = false;
+            streamState.webSearchCallsByGoogleId = Object.create(null);
+            streamState.webSearchCallOrder = [];
+            streamState.messageAnnotations = [];
+            streamState.messageAnnotationKeys = Object.create(null);
+            streamState.groundingChunks = [];
+            streamState.groundingSupports = [];
+            streamState.webSearchQueries = [];
             streamState.completed = false;
         };
 
@@ -1539,6 +1546,7 @@ class FormatConverter {
                 output_index: outputIndex,
                 part: {
                     annotations: [],
+                    logprobs: [],
                     text: "",
                     type: "output_text",
                 },
@@ -1579,6 +1587,91 @@ class FormatConverter {
             });
 
             return streamState.reasoningItem;
+        };
+
+        const ensureWebSearchCall = (googleCallId, queries = []) => {
+            const normalizedQueries = this._normalizeWebSearchQueries(queries);
+            const lookupKey =
+                typeof googleCallId === "string" && googleCallId
+                    ? googleCallId
+                    : streamState.webSearchCallOrder[0] || `grounding_${this._generateRequestId()}`;
+            const existing = streamState.webSearchCallsByGoogleId[lookupKey];
+
+            if (existing) {
+                if (normalizedQueries.length > 0 && (existing.action.queries || []).length === 0) {
+                    existing.action.queries = normalizedQueries;
+                }
+                return existing;
+            }
+
+            const outputIndex = streamState.nextOutputIndex++;
+            const searchCall = {
+                action: {
+                    ...(normalizedQueries.length > 0 ? { queries: normalizedQueries } : {}),
+                    type: "search",
+                },
+                google_call_id: lookupKey,
+                id: `ws_${this._generateRequestId()}`,
+                output_index: outputIndex,
+                status: "in_progress",
+            };
+
+            streamState.webSearchCallsByGoogleId[lookupKey] = searchCall;
+            streamState.webSearchCallOrder.push(lookupKey);
+
+            const item = {
+                action: searchCall.action,
+                id: searchCall.id,
+                status: "in_progress",
+                type: "web_search_call",
+            };
+            streamState.outputItemsByIndex[outputIndex] = item;
+
+            pushEvent("response.output_item.added", {
+                item,
+                output_index: outputIndex,
+            });
+            pushEvent("response.web_search_call.in_progress", {
+                item_id: searchCall.id,
+                output_index: outputIndex,
+            });
+            pushEvent("response.web_search_call.searching", {
+                item_id: searchCall.id,
+                output_index: outputIndex,
+            });
+
+            return searchCall;
+        };
+
+        const completeWebSearchCall = searchCall => {
+            if (!searchCall || searchCall.status === "completed") return;
+
+            searchCall.status = "completed";
+            const completedItem = {
+                action: searchCall.action,
+                id: searchCall.id,
+                status: "completed",
+                type: "web_search_call",
+            };
+            streamState.outputItemsByIndex[searchCall.output_index] = completedItem;
+
+            pushEvent("response.web_search_call.completed", {
+                item_id: searchCall.id,
+                output_index: searchCall.output_index,
+            });
+            pushEvent("response.output_item.done", {
+                item: completedItem,
+                output_index: searchCall.output_index,
+            });
+        };
+
+        const findWebSearchCall = googleCallId => {
+            if (typeof googleCallId === "string" && googleCallId) {
+                return streamState.webSearchCallsByGoogleId[googleCallId] || null;
+            }
+
+            const lastKey = streamState.webSearchCallOrder[streamState.webSearchCallOrder.length - 1];
+            return lastKey ? streamState.webSearchCallsByGoogleId[lastKey] : null;
         };
 
         const finalizeReasoningItem = () => {
@@ -1636,10 +1729,12 @@ class FormatConverter {
             const outputIndex = streamState.messageItem.output_index;
             const contentIndex = streamState.messageItem.content_index;
             const finalText = streamState.messageText || "";
+            const annotations = streamState.messageAnnotations || [];
 
             pushEvent("response.output_text.done", {
                 content_index: contentIndex,
                 item_id: itemId,
+                logprobs: [],
                 output_index: outputIndex,
                 text: finalText,
             });
@@ -1649,7 +1744,8 @@ class FormatConverter {
                 item_id: itemId,
                 output_index: outputIndex,
                 part: {
-                    annotations: [],
+                    annotations,
+                    logprobs: [],
                     text: finalText,
                     type: "output_text",
                 },
@@ -1658,7 +1754,8 @@ class FormatConverter {
             const completedItem = {
                 content: [
                     {
-                        annotations: [],
+                        annotations,
+                        logprobs: [],
                         text: finalText,
                         type: "output_text",
                     },
@@ -1698,6 +1795,20 @@ class FormatConverter {
                     );
                 }
                 return;
+            }
+
+            const candidateGrounding = candidate.groundingMetadata;
+            if (candidateGrounding) {
+                if (Array.isArray(candidateGrounding.groundingChunks)) {
+                    streamState.groundingChunks.push(...candidateGrounding.groundingChunks);
+                }
+                if (Array.isArray(candidateGrounding.groundingSupports)) {
+                    streamState.groundingSupports.push(...candidateGrounding.groundingSupports);
+                }
+                streamState.webSearchQueries = this._normalizeWebSearchQueries([
+                    ...streamState.webSearchQueries,
+                    ...this._normalizeWebSearchQueries(candidateGrounding.webSearchQueries),
+                ]);
             }
 
             // Emit the initial response state events once
@@ -1752,6 +1863,19 @@ class FormatConverter {
                         continue;
                     }
 
+                    if (part?.toolCall?.toolType === "GOOGLE_SEARCH_WEB") {
+                        const toolCall = part.toolCall;
+                        ensureWebSearchCall(toolCall.id, toolCall.args?.queries || toolCall.args?.query);
+                        continue;
+                    }
+
+                    if (part?.toolResponse?.toolType === "GOOGLE_SEARCH_WEB") {
+                        const toolResponse = part.toolResponse;
+                        const searchCall = findWebSearchCall(toolResponse.id) || ensureWebSearchCall(toolResponse.id);
+                        completeWebSearchCall(searchCall);
+                        continue;
+                    }
+
                     if (part?.text) {
                         const messageItem = ensureMessageItem();
                         streamState.messageText += part.text;
@@ -1760,6 +1884,7 @@ class FormatConverter {
                             content_index: messageItem.content_index,
                             delta: part.text,
                             item_id: messageItem.id,
+                            logprobs: [],
                             output_index: messageItem.output_index,
                         });
                     } else if (part?.inlineData) {
@@ -1777,6 +1902,7 @@ class FormatConverter {
                                 content_index: messageItem.content_index,
                                 delta: note,
                                 item_id: messageItem.id,
+                                logprobs: [],
                                 output_index: messageItem.output_index,
                             });
                         }
@@ -1851,6 +1977,48 @@ class FormatConverter {
 
             // Completion
             if (candidate.finishReason && !streamState.completed) {
+                const grounding = this._extractResponseWebSearchGrounding(
+                    {
+                        groundingMetadata: {
+                            groundingChunks: streamState.groundingChunks,
+                            groundingSupports: streamState.groundingSupports,
+                            webSearchQueries: streamState.webSearchQueries,
+                        },
+                    },
+                    streamState.messageText || ""
+                );
+                if (
+                    grounding.queries.length > 0 ||
+                    grounding.annotations.length > 0 ||
+                    streamState.webSearchCallOrder.length > 0
+                ) {
+                    let searchCall = findWebSearchCall();
+                    if (!searchCall) {
+                        searchCall = ensureWebSearchCall(null, grounding.queries);
+                    } else if ((searchCall.action.queries || []).length === 0 && grounding.queries.length > 0) {
+                        searchCall.action.queries = grounding.queries;
+                    }
+                    for (const lookupKey of streamState.webSearchCallOrder) {
+                        completeWebSearchCall(streamState.webSearchCallsByGoogleId[lookupKey]);
+                    }
+                }
+
+                streamState.messageAnnotations = grounding.annotations;
+                if (streamState.messageItem) {
+                    grounding.annotations.forEach((annotation, annotationIndex) => {
+                        const annotationKey = `${annotation.start_index}:${annotation.end_index}:${annotation.url}`;
+                        if (streamState.messageAnnotationKeys[annotationKey]) return;
+                        streamState.messageAnnotationKeys[annotationKey] = true;
+                        pushEvent("response.output_text.annotation.added", {
+                            annotation,
+                            annotation_index: annotationIndex,
+                            content_index: streamState.messageItem.content_index,
+                            item_id: streamState.messageItem.id,
+                            output_index: streamState.messageItem.output_index,
+                        });
+                    });
+                }
+
                 finalizeReasoningItem();
                 finalizeMessageItem();
 
@@ -1863,7 +2031,8 @@ class FormatConverter {
                 const responseUsage = {
                     input_tokens: usage.prompt_tokens,
                     input_tokens_details: {
-                        cached_tokens: 0,
+                        cache_write_tokens: 0,
+                        cached_tokens: usage.prompt_tokens_details?.cached_tokens || 0,
                     },
                     output_tokens: usage.completion_tokens,
                     output_tokens_details: {
@@ -2080,6 +2249,7 @@ class FormatConverter {
                 usage: {
                     input_tokens: 0,
                     input_tokens_details: {
+                        cache_write_tokens: 0,
                         cached_tokens: 0,
                     },
                     output_tokens: 0,
@@ -2097,6 +2267,7 @@ class FormatConverter {
         const output = [];
         let messageContent = "";
         let reasoningContent = "";
+        let webSearchQueries = [];
         if (candidate.content && Array.isArray(candidate.content.parts)) {
             for (const part of candidate.content.parts) {
                 // Responses API supports reasoning output items; map Gemini "thought" parts into a reasoning *summary*.
@@ -2112,6 +2283,11 @@ class FormatConverter {
                         messageContent =
                             "[Image output omitted: Responses API image outputs are disabled by this proxy.]";
                     }
+                } else if (part?.toolCall?.toolType === "GOOGLE_SEARCH_WEB") {
+                    webSearchQueries = this._normalizeWebSearchQueries([
+                        ...webSearchQueries,
+                        ...this._normalizeWebSearchQueries(part.toolCall.args?.queries || part.toolCall.args?.query),
+                    ]);
                 } else if (part.functionCall) {
                     // Function call
                     const funcCall = part.functionCall;
@@ -2156,13 +2332,31 @@ class FormatConverter {
             });
         }
 
+        const grounding = this._extractResponseWebSearchGrounding(candidate, messageContent);
+        if (webSearchQueries.length === 0) webSearchQueries = grounding.queries;
+        if (
+            webSearchQueries.length > 0 ||
+            grounding.annotations.length > 0 ||
+            candidate.groundingMetadata?.groundingChunks?.length > 0
+        ) {
+            output.push({
+                action: {
+                    ...(webSearchQueries.length > 0 ? { queries: webSearchQueries } : {}),
+                    type: "search",
+                },
+                id: `ws_${this._generateRequestId()}`,
+                status: "completed",
+                type: "web_search_call",
+            });
+        }
+
         // Add message output if present
         if (messageContent) {
             output.push({
                 content: [
                     {
-                        annotations: [],
-                        logprobs: null,
+                        annotations: grounding.annotations,
+                        logprobs: [],
                         text: messageContent,
                         type: "output_text",
                     },
@@ -2209,7 +2403,8 @@ class FormatConverter {
             usage: {
                 input_tokens: usage.prompt_tokens,
                 input_tokens_details: {
-                    cached_tokens: 0,
+                    cache_write_tokens: 0,
+                    cached_tokens: usage.prompt_tokens_details?.cached_tokens || 0,
                 },
                 output_tokens: usage.completion_tokens,
                 output_tokens_details: {
@@ -2243,11 +2438,100 @@ class FormatConverter {
         return `${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
     }
 
+    _normalizeWebSearchQueries(value) {
+        const queries = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+        return [
+            ...new Set(queries.filter(query => typeof query === "string" && query.trim()).map(query => query.trim())),
+        ];
+    }
+
+    _utf8ByteOffsetToStringIndex(value, byteOffset) {
+        const targetOffset = Number.isFinite(byteOffset) ? Math.max(0, byteOffset) : 0;
+        let currentByteOffset = 0;
+        let stringIndex = 0;
+
+        for (const character of value) {
+            const characterBytes = Buffer.byteLength(character, "utf8");
+            if (currentByteOffset + characterBytes > targetOffset) break;
+            currentByteOffset += characterBytes;
+            stringIndex += character.length;
+            if (currentByteOffset === targetOffset) break;
+        }
+
+        return stringIndex;
+    }
+
+    _extractResponseWebSearchGrounding(candidate, messageText = "") {
+        const metadata = candidate?.groundingMetadata || {};
+        const queries = this._normalizeWebSearchQueries(metadata.webSearchQueries);
+        const chunks = Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks : [];
+        const supports = Array.isArray(metadata.groundingSupports) ? metadata.groundingSupports : [];
+        const annotations = [];
+        const annotationKeys = new Set();
+
+        for (const support of supports) {
+            const segment = support?.segment || {};
+            const segmentText = typeof segment.text === "string" ? segment.text : "";
+            const segmentStartByte = Number.isFinite(segment.startIndex) ? Math.max(0, segment.startIndex) : 0;
+            const segmentEndByte = Number.isFinite(segment.endIndex)
+                ? Math.max(segmentStartByte, segment.endIndex)
+                : segmentStartByte + Buffer.byteLength(segmentText, "utf8");
+            let startIndex = this._utf8ByteOffsetToStringIndex(messageText, segmentStartByte);
+            let endIndex = this._utf8ByteOffsetToStringIndex(messageText, segmentEndByte);
+
+            // Gemini grounding offsets are UTF-8 byte offsets. Resolve the exact segment text as
+            // an additional safeguard before converting to OpenAI character offsets.
+            if (segmentText && messageText.slice(startIndex, endIndex) !== segmentText) {
+                let matchedIndex = messageText.indexOf(segmentText, Math.max(0, startIndex - 128));
+                if (matchedIndex < 0) matchedIndex = messageText.indexOf(segmentText);
+                if (matchedIndex >= 0) {
+                    startIndex = matchedIndex;
+                    endIndex = matchedIndex + segmentText.length;
+                }
+            }
+
+            startIndex = Math.min(startIndex, messageText.length);
+            endIndex = Math.min(Math.max(startIndex, endIndex), messageText.length);
+            const openAIStartIndex = Array.from(messageText.slice(0, startIndex)).length;
+            const openAIEndIndex = openAIStartIndex + Array.from(messageText.slice(startIndex, endIndex)).length;
+
+            const chunkIndices = Array.isArray(support?.groundingChunkIndices) ? support.groundingChunkIndices : [];
+            for (const chunkIndex of chunkIndices) {
+                const web = chunks[chunkIndex]?.web;
+                if (!web || typeof web.uri !== "string" || !web.uri) continue;
+
+                const annotation = {
+                    end_index: openAIEndIndex,
+                    start_index: openAIStartIndex,
+                    title: web.siteName || web.title || web.domain || web.uri,
+                    type: "url_citation",
+                    url: web.uri,
+                };
+                const key = `${annotation.start_index}:${annotation.end_index}:${annotation.url}`;
+                if (annotationKeys.has(key)) continue;
+                annotationKeys.add(key);
+                annotations.push(annotation);
+            }
+        }
+
+        return { annotations, queries };
+    }
+
     _parseUsage(googleResponse) {
         const usage = googleResponse.usageMetadata || {};
 
         const inputTokens = usage.promptTokenCount || 0;
         const toolPromptTokens = usage.toolUsePromptTokenCount || 0;
+        let cachedTokens = Number.isFinite(usage.cachedContentTokenCount)
+            ? Math.max(0, usage.cachedContentTokenCount)
+            : 0;
+
+        if (!Number.isFinite(usage.cachedContentTokenCount) && Array.isArray(usage.cacheTokensDetails)) {
+            cachedTokens = usage.cacheTokensDetails.reduce(
+                (sum, detail) => sum + (Number.isFinite(detail?.tokenCount) ? Math.max(0, detail.tokenCount) : 0),
+                0
+            );
+        }
 
         const completionTextTokens = usage.candidatesTokenCount || 0;
         const reasoningTokens = usage.thoughtsTokenCount || 0;
@@ -2262,6 +2546,7 @@ class FormatConverter {
         }
 
         const promptTokens = inputTokens + toolPromptTokens;
+        cachedTokens = Math.min(cachedTokens, promptTokens);
         const totalCompletionTokens = completionTextTokens + reasoningTokens;
         const totalTokens = googleResponse.usageMetadata?.totalTokenCount || 0;
 
@@ -2274,6 +2559,7 @@ class FormatConverter {
             },
             prompt_tokens: promptTokens,
             prompt_tokens_details: {
+                cached_tokens: cachedTokens,
                 text_tokens: inputTokens,
                 tool_tokens: toolPromptTokens,
             },
