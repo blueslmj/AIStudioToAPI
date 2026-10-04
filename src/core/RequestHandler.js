@@ -342,7 +342,7 @@ class RequestHandler {
                 );
             } else if (format === "response_api") {
                 // OpenAI Response API format: event: error\ndata: {...}
-                if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
+                if (res.__responseApiSeq == null) res.__responseApiSeq = -1;
                 res.__responseApiSeq += 1;
                 res.write(
                     `event: error\ndata: ${JSON.stringify({
@@ -424,7 +424,7 @@ class RequestHandler {
                         sequence_number: 0,
                         type: "error",
                     };
-                    if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
+                    if (res.__responseApiSeq == null) res.__responseApiSeq = -1;
                     res.__responseApiSeq += 1;
                     errorPayload.sequence_number = res.__responseApiSeq;
                     if (this._isResponseWritable(res)) {
@@ -478,7 +478,7 @@ class RequestHandler {
                         sequence_number: 0,
                         type: "error",
                     };
-                    if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
+                    if (res.__responseApiSeq == null) res.__responseApiSeq = -1;
                     res.__responseApiSeq += 1;
                     errorPayload.sequence_number = res.__responseApiSeq;
                     if (this._isResponseWritable(res)) {
@@ -1792,7 +1792,7 @@ class RequestHandler {
 
                             this.logger.info(`[Request] OpenAI Response API streaming response (Fake Mode) started...`);
                             let fullBody = "";
-                            if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
+                            if (res.__responseApiSeq == null) res.__responseApiSeq = -1;
                             let hadStreamError = false;
                             try {
                                 // eslint-disable-next-line no-constant-condition
@@ -3484,7 +3484,7 @@ class RequestHandler {
         };
         const requestId = streamOptions.requestId;
         // Keep Response API sequence numbers consistent across helpers that might write to the same SSE response.
-        if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
+        if (res.__responseApiSeq == null) res.__responseApiSeq = -1;
         streamState.sequenceNumber = res.__responseApiSeq;
 
         try {
@@ -3503,7 +3503,7 @@ class RequestHandler {
                     this._markTrackedResponseError(res, message.message, 500);
                     if (this._isResponseWritable(res)) {
                         try {
-                            if (!streamState.sequenceNumber) streamState.sequenceNumber = 0;
+                            if (!Number.isInteger(streamState.sequenceNumber)) streamState.sequenceNumber = -1;
                             streamState.sequenceNumber++;
                             res.__responseApiSeq = streamState.sequenceNumber;
                             res.write(
@@ -3818,7 +3818,7 @@ class RequestHandler {
                         this._markTrackedResponseError(res, errorMessage, errorCode);
 
                         if (format === "response_api") {
-                            if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
+                            if (res.__responseApiSeq == null) res.__responseApiSeq = -1;
                             res.__responseApiSeq += 1;
                             res.write(
                                 `event: error\ndata: ${JSON.stringify({
@@ -3985,7 +3985,7 @@ class RequestHandler {
         if (this._isResponseWritable(res)) {
             try {
                 if (format === "response_api") {
-                    if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
+                    if (res.__responseApiSeq == null) res.__responseApiSeq = -1;
                     res.__responseApiSeq += 1;
                     res.write(
                         `event: error\ndata: ${JSON.stringify({

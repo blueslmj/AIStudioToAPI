@@ -1321,11 +1321,22 @@ class FormatConverter {
         const eventsToSend = [];
 
         const pushEvent = (eventType, payload) => {
-            if (!streamState.sequenceNumber) streamState.sequenceNumber = 0;
+            // sequence_number is zero-based and increases once per emitted event.
+            if (!Number.isInteger(streamState.sequenceNumber)) streamState.sequenceNumber = -1;
             streamState.sequenceNumber++;
+
+            // The Responses function-calling stream documents response_id on argument
+            // events and on output-item events whose item is a function_call. Generic
+            // text/reasoning output events do not carry this top-level field.
+            const isFunctionCallEvent =
+                eventType === "response.function_call_arguments.delta" ||
+                eventType === "response.function_call_arguments.done" ||
+                ((eventType === "response.output_item.added" || eventType === "response.output_item.done") &&
+                    payload?.item?.type === "function_call");
 
             const eventPayload = {
                 ...payload,
+                ...(isFunctionCallEvent ? { response_id: streamState.id } : {}),
                 sequence_number: streamState.sequenceNumber,
                 type: eventType,
             };
@@ -1674,7 +1685,14 @@ class FormatConverter {
                     } else if (part?.functionCall) {
                         const funcCall = part.functionCall;
                         const itemId = `fc_${this._generateRequestId()}`;
-                        const callId = `call_${this._generateRequestId()}`;
+                        // Pass the Gemini-issued function call id through as the Responses API
+                        // `call_id` so it round-trips back into `functionCall.id` /
+                        // `functionResponse.id` on the next request (needed to pair parallel
+                        // calls). Fall back to a generated id when the backend omits it.
+                        const callId =
+                            typeof funcCall.id === "string" && funcCall.id
+                                ? funcCall.id
+                                : `call_${this._generateRequestId()}`;
                         const outputIndex = streamState.nextOutputIndex++;
                         const args = JSON.stringify(funcCall.args || {});
 
@@ -1690,10 +1708,15 @@ class FormatConverter {
                             output_index: outputIndex,
                         });
 
+                        pushEvent("response.function_call_arguments.delta", {
+                            delta: args,
+                            item_id: itemId,
+                            output_index: outputIndex,
+                        });
+
                         pushEvent("response.function_call_arguments.done", {
                             arguments: args,
                             item_id: itemId,
-                            name: funcCall.name,
                             output_index: outputIndex,
                         });
 
@@ -1713,7 +1736,7 @@ class FormatConverter {
                         });
 
                         this.logger.info(
-                            `[Adapter] Converted Gemini functionCall to Response API function_call: ${funcCall.name}`
+                            `[Adapter] Converted Gemini functionCall to Response API function_call: ${funcCall.name} (call_id: ${callId})`
                         );
                     }
                 }
@@ -1980,7 +2003,12 @@ class FormatConverter {
                 } else if (part.functionCall) {
                     // Function call
                     const funcCall = part.functionCall;
-                    const callId = `call_${this._generateRequestId()}`;
+                    // Pass through the Gemini-issued call id so it round-trips into
+                    // `functionCall.id`/`functionResponse.id` on the next request.
+                    const callId =
+                        typeof funcCall.id === "string" && funcCall.id
+                            ? funcCall.id
+                            : `call_${this._generateRequestId()}`;
                     output.push({
                         arguments: JSON.stringify(funcCall.args || {}),
                         call_id: callId,
@@ -1990,7 +2018,7 @@ class FormatConverter {
                         type: "function_call",
                     });
                     this.logger.info(
-                        `[Adapter] Converted Gemini functionCall to Response API function_call: ${funcCall.name}`
+                        `[Adapter] Converted Gemini functionCall to Response API function_call: ${funcCall.name} (call_id: ${callId})`
                     );
                 }
             }
@@ -3092,7 +3120,12 @@ class FormatConverter {
             if (typeof content === "string") return content;
             if (!Array.isArray(content)) return "";
             return content
-                .filter(c => c && typeof c === "object" && (c.type === "text" || c.type === "input_text"))
+                .filter(
+                    c =>
+                        c &&
+                        typeof c === "object" &&
+                        (c.type === "text" || c.type === "input_text" || c.type === "output_text")
+                )
                 .map(c => c.text)
                 .filter(Boolean)
                 .join("\n");
@@ -3152,22 +3185,111 @@ class FormatConverter {
             });
         } else if (Array.isArray(input)) {
             // Array input - could be strings or message objects
+            //
+            // Tool-call translation notes (Responses API <-> Gemini function calling):
+            // - The Responses API `call_id` is written back into BOTH the Gemini
+            //   `functionCall.id` and the paired `functionResponse.id`, so parallel calls
+            //   can be paired without ambiguity. On the way out (Gemini -> Responses), the
+            //   Gemini-issued `functionCall.id` is passed through as `call_id`.
+            // - Adjacent function_call items are merged into ONE model turn, and the
+            //   function_call_output items answering them are merged into ONE user turn,
+            //   matching Gemini's convention for parallel function calling.
             const callIdToName = {};
-            for (const item of input) {
-                if (
-                    item &&
-                    typeof item === "object" &&
-                    item.type === "function_call" &&
-                    typeof item.call_id === "string" &&
-                    typeof item.name === "string"
-                ) {
-                    callIdToName[item.call_id] = item.name;
+            const toolCallsInOrder = [];
+            const toolCallsAnsweredByCallId = new Set();
+            const functionResponseMetaByItem = new Map();
+            for (let itemIndex = 0; itemIndex < input.length; itemIndex++) {
+                const scannedItem = input[itemIndex];
+                if (!scannedItem || typeof scannedItem !== "object") {
+                    continue;
+                }
+                if (scannedItem.type === "function_call" && typeof scannedItem.name === "string") {
+                    toolCallsInOrder.push({
+                        callId:
+                            typeof scannedItem.call_id === "string" && scannedItem.call_id ? scannedItem.call_id : null,
+                        index: itemIndex,
+                        matched: false,
+                        name: scannedItem.name,
+                    });
+                    if (typeof scannedItem.call_id === "string" && scannedItem.call_id) {
+                        callIdToName[scannedItem.call_id] = scannedItem.name;
+                    }
+                } else if (scannedItem.type === "function_call_output") {
+                    const outputCallId =
+                        typeof scannedItem.call_id === "string" && scannedItem.call_id ? scannedItem.call_id : null;
+                    if (outputCallId) {
+                        toolCallsAnsweredByCallId.add(outputCallId);
+                    }
+                    let functionName =
+                        (typeof scannedItem.name === "string" && scannedItem.name) ||
+                        (outputCallId ? callIdToName[outputCallId] : undefined);
+                    if (!functionName) {
+                        // No usable call_id/name on the output item. When the history holds
+                        // exactly one call issued before this output that is still unmatched,
+                        // pair by elimination; otherwise use a clearly-labeled placeholder
+                        // (and log loudly) instead of silently feeding the model a wrong name.
+                        let eliminationCandidate = null;
+                        for (const toolCall of toolCallsInOrder) {
+                            if (toolCall.index >= itemIndex) {
+                                break;
+                            }
+                            if (
+                                toolCall.matched ||
+                                (toolCall.callId && toolCallsAnsweredByCallId.has(toolCall.callId))
+                            ) {
+                                continue;
+                            }
+                            if (eliminationCandidate) {
+                                eliminationCandidate = null;
+                                break;
+                            }
+                            eliminationCandidate = toolCall;
+                        }
+                        if (eliminationCandidate) {
+                            eliminationCandidate.matched = true;
+                            functionName = eliminationCandidate.name;
+                            this.logger.info(
+                                `[Adapter] Paired function_call_output with single unmatched function_call by elimination: ${eliminationCandidate.name}`
+                            );
+                        } else {
+                            functionName = "unknown_function";
+                            this.logger.warn(
+                                `[Adapter] function_call_output has no resolvable function name (call_id: ${outputCallId || "missing"}), using placeholder "unknown_function"`
+                            );
+                        }
+                    }
+                    functionResponseMetaByItem.set(scannedItem, {
+                        id: outputCallId || undefined,
+                        name: functionName,
+                    });
                 }
             }
 
+            // Pending tool parts: consecutive function_call items accumulate into one model
+            // turn; the function_call_output items answering them accumulate into one user turn.
+            let pendingFunctionCallParts = [];
+            let pendingFunctionResponseParts = [];
+            const flushToolTurns = () => {
+                if (pendingFunctionCallParts.length > 0) {
+                    googleContents.push({
+                        parts: pendingFunctionCallParts,
+                        role: "model",
+                    });
+                    pendingFunctionCallParts = [];
+                }
+                if (pendingFunctionResponseParts.length > 0) {
+                    googleContents.push({
+                        parts: pendingFunctionResponseParts,
+                        role: "user",
+                    });
+                    pendingFunctionResponseParts = [];
+                }
+            };
+
             for (const item of input) {
                 if (typeof item === "string") {
-                    // Array of strings
+                    // Array of strings (plain content separates tool rounds)
+                    flushToolTurns();
                     googleContents.push({
                         parts: [{ text: item }],
                         role: "user",
@@ -3178,7 +3300,12 @@ class FormatConverter {
                     }
                     // Handle different message types in Response API
                     if (item.type === "function_call") {
-                        // Function call from model (assistant message with tool call)
+                        // Function call from model (assistant message with tool call).
+                        // A tool round closes as soon as its outputs begin, so starting a new
+                        // functionCall turn after pending responses flushes that round first.
+                        if (pendingFunctionResponseParts.length > 0) {
+                            flushToolTurns();
+                        }
                         const rawArgs =
                             item && typeof item === "object" && Object.prototype.hasOwnProperty.call(item, "arguments")
                                 ? item["arguments"]
@@ -3188,36 +3315,49 @@ class FormatConverter {
                                 args: safeParseJSON(rawArgs, "unparsed_arguments"),
                                 name: item.name,
                             },
-                            thoughtSignature: FormatConverter.DUMMY_THOUGHT_SIGNATURE,
                         };
-                        googleContents.push({
-                            parts: [functionCallPart],
-                            role: "model",
-                        });
+                        if (pendingFunctionCallParts.length === 0) {
+                            functionCallPart.thoughtSignature = FormatConverter.DUMMY_THOUGHT_SIGNATURE;
+                        }
+                        if (typeof item.call_id === "string" && item.call_id) {
+                            functionCallPart.functionCall.id = item.call_id;
+                        }
+                        pendingFunctionCallParts.push(functionCallPart);
                         this.logger.debug(
                             `[Adapter] Converted Response API function_call to Gemini functionCall: ${item.name}`
                         );
                     } else if (item.type === "function_call_output") {
-                        // Function output (tool result from user)
-                        const functionName =
-                            item.name ||
-                            (typeof item.call_id === "string" ? callIdToName[item.call_id] : undefined) ||
-                            "unknown_function";
-                        const functionResponsePart = {
-                            functionResponse: {
-                                name: functionName,
-                                response: safeParseJSON(item.output, "unparsed_output"),
-                            },
+                        // Function output (tool result from user). Responses must live in the
+                        // user turn directly following the model turn with the calls, so close
+                        // the pending functionCall turn first and keep accumulating outputs.
+                        if (pendingFunctionCallParts.length > 0) {
+                            googleContents.push({
+                                parts: pendingFunctionCallParts,
+                                role: "model",
+                            });
+                            pendingFunctionCallParts = [];
+                        }
+                        const responseMeta = functionResponseMetaByItem.get(item) || {
+                            id: undefined,
+                            name: "unknown_function",
                         };
-                        googleContents.push({
-                            parts: [functionResponsePart],
-                            role: "user",
+                        const functionResponseBody = {
+                            name: responseMeta.name,
+                            response: safeParseJSON(item.output, "unparsed_output"),
+                        };
+                        if (responseMeta.id) {
+                            functionResponseBody.id = responseMeta.id;
+                        }
+                        pendingFunctionResponseParts.push({
+                            functionResponse: functionResponseBody,
                         });
                         this.logger.debug(
-                            `[Adapter] Converted Response API function_call_output to Gemini functionResponse: ${item.name || "unknown"}`
+                            `[Adapter] Converted Response API function_call_output to Gemini functionResponse: ${responseMeta.name}`
                         );
                     } else {
-                        // Regular message object with role and content
+                        // Regular message object with role and content.
+                        // Plain content separates tool rounds, so flush pending tool turns.
+                        flushToolTurns();
                         const googleParts = [];
 
                         if (typeof item.content === "string") {
@@ -3225,7 +3365,11 @@ class FormatConverter {
                         } else if (Array.isArray(item.content)) {
                             // Multi-modal content
                             for (const contentPart of item.content) {
-                                if (contentPart.type === "text" || contentPart.type === "input_text") {
+                                if (
+                                    contentPart.type === "text" ||
+                                    contentPart.type === "input_text" ||
+                                    contentPart.type === "output_text"
+                                ) {
                                     googleParts.push({ text: contentPart.text });
                                 } else if (contentPart.type === "image_url" || contentPart.type === "input_image") {
                                     const imageUrl = this.normalizeImageUrl(contentPart.image_url);
@@ -3300,6 +3444,8 @@ class FormatConverter {
                     }
                 }
             }
+            // Flush any tool turns still open at the end of the input array.
+            flushToolTurns();
         }
 
         // Build Google request
