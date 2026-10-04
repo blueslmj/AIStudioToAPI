@@ -250,10 +250,6 @@ class FormatConverter {
             let geminiName = funcDef.name;
             if (namespace) {
                 geminiName = this._encodeResponseNamespaceFunctionName(namespace, funcDef.name);
-                const mapKey = `${namespace}\u0000${funcDef.name}`;
-                namespaceAliasMap[mapKey] = geminiName;
-                functionNameMap[geminiName] = { name: funcDef.name, namespace };
-                namespaceFunctionCount++;
             }
 
             if (usedNames.has(geminiName)) {
@@ -263,6 +259,13 @@ class FormatConverter {
                 return;
             }
             usedNames.add(geminiName);
+
+            if (namespace) {
+                const mapKey = `${namespace}\u0000${funcDef.name}`;
+                namespaceAliasMap[mapKey] = geminiName;
+                functionNameMap[geminiName] = { name: funcDef.name, namespace };
+                namespaceFunctionCount++;
+            }
 
             const declaration = { name: geminiName };
             const descriptionParts = [];
