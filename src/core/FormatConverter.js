@@ -2567,6 +2567,20 @@ class FormatConverter {
         };
     }
 
+    _parseClaudeUsage(usageMetadata = {}) {
+        const parsedUsage = this._parseUsage({ usageMetadata });
+        const cacheReadInputTokens = parsedUsage.prompt_tokens_details.cached_tokens || 0;
+
+        return {
+            // Anthropic reports uncached input separately from cache reads/writes.
+            // Gemini exposes cache reads but does not expose an equivalent cache-write count.
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: cacheReadInputTokens,
+            input_tokens: Math.max(0, parsedUsage.prompt_tokens - cacheReadInputTokens),
+            output_tokens: parsedUsage.completion_tokens,
+        };
+    }
+
     _buildClaudeServerToolBlocks(candidate, state = {}, options = {}) {
         const includeCodeExecution = options.includeCodeExecution !== false;
         const includeMetadata = options.includeMetadata !== false;
@@ -3473,11 +3487,15 @@ class FormatConverter {
 
         // Update stream state with usage if available
         if (usage) {
-            const inputTokens = (usage.promptTokenCount || 0) + (usage.toolUsePromptTokenCount || 0);
-            const outputTokens = (usage.candidatesTokenCount || 0) + (usage.thoughtsTokenCount || 0);
+            const claudeUsage = this._parseClaudeUsage(usage);
+            const totalInputTokens = (usage.promptTokenCount || 0) + (usage.toolUsePromptTokenCount || 0);
 
-            if (inputTokens > 0) streamState.inputTokens = inputTokens;
-            streamState.outputTokens = outputTokens;
+            if (totalInputTokens > 0) {
+                streamState.inputTokens = claudeUsage.input_tokens;
+                streamState.cacheReadInputTokens = claudeUsage.cache_read_input_tokens;
+                streamState.cacheCreationInputTokens = claudeUsage.cache_creation_input_tokens;
+            }
+            streamState.outputTokens = claudeUsage.output_tokens;
         }
 
         // Initialize stream state
@@ -3602,6 +3620,8 @@ class FormatConverter {
                     stop_sequence: null,
                     type: "message",
                     usage: {
+                        cache_creation_input_tokens: streamState.cacheCreationInputTokens || 0,
+                        cache_read_input_tokens: streamState.cacheReadInputTokens || 0,
                         input_tokens: streamState.inputTokens || 0,
                         output_tokens: 0,
                     },
@@ -3741,6 +3761,9 @@ class FormatConverter {
                 },
                 type: "message_delta",
                 usage: {
+                    cache_creation_input_tokens: streamState.cacheCreationInputTokens || 0,
+                    cache_read_input_tokens: streamState.cacheReadInputTokens || 0,
+                    input_tokens: streamState.inputTokens || 0,
                     output_tokens: streamState.outputTokens || 0,
                     ...(Object.keys(serverToolUse).length > 0 ? { server_tool_use: serverToolUse } : {}),
                 },
@@ -3772,6 +3795,7 @@ class FormatConverter {
 
         const candidate = googleResponse.candidates?.[0];
         const usage = googleResponse.usageMetadata || {};
+        const claudeUsage = this._parseClaudeUsage(usage);
 
         const messageId = `msg_${this._generateRequestId()}`;
         const content = [];
@@ -3785,11 +3809,7 @@ class FormatConverter {
                 stop_reason: "end_turn",
                 stop_sequence: null,
                 type: "message",
-                usage: {
-                    input_tokens: (usage.promptTokenCount || 0) + (usage.toolUsePromptTokenCount || 0),
-                    // Match OpenAI logic: sum candidates tokens + thoughts tokens
-                    output_tokens: (usage.candidatesTokenCount || 0) + (usage.thoughtsTokenCount || 0),
-                },
+                usage: claudeUsage,
             };
         }
 
@@ -3867,9 +3887,7 @@ class FormatConverter {
             stop_sequence: null,
             type: "message",
             usage: {
-                input_tokens: (usage.promptTokenCount || 0) + (usage.toolUsePromptTokenCount || 0),
-                // Match OpenAI logic: sum candidates tokens + thoughts tokens
-                output_tokens: (usage.candidatesTokenCount || 0) + (usage.thoughtsTokenCount || 0),
+                ...claudeUsage,
                 ...(Object.keys(serverToolUse).length > 0 ? { server_tool_use: serverToolUse } : {}),
             },
         };
