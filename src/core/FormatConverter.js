@@ -196,6 +196,104 @@ class FormatConverter {
     }
 
     /**
+     * Gemini exposes a flat function namespace, while the Responses API can group
+     * functions under a `namespace` tool. Build a stable Gemini-safe alias for a
+     * namespaced function and keep enough metadata to restore the official
+     * Responses `name` + `namespace` shape on the way back.
+     *
+     * Gemini function names are kept to ASCII letters, digits, and underscores
+     * and capped at 64 characters. The hash makes aliases stable and prevents
+     * equal inner function names in different namespaces from colliding.
+     *
+     * @param {string} namespace - Responses API namespace name
+     * @param {string} functionName - Function name inside the namespace
+     * @returns {string} Gemini-safe function name
+     * @private
+     */
+    _encodeResponseNamespaceFunctionName(namespace, functionName) {
+        const source = `${namespace}\u0000${functionName}`;
+        let hash = 2166136261;
+        for (let i = 0; i < source.length; i++) {
+            hash ^= source.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        const hashText = (hash >>> 0).toString(36).padStart(7, "0").slice(-7);
+        let readable = `ns_${namespace}__${functionName}`.replace(/[^A-Za-z0-9_]/g, "_");
+        if (!/^[A-Za-z_]/.test(readable)) readable = `ns_${readable}`;
+        const suffix = `_${hashText}`;
+        return `${readable.slice(0, 64 - suffix.length)}${suffix}`;
+    }
+
+    /**
+     * Collect Responses API function tools, including functions nested in
+     * namespace tools, into Gemini's flat functionDeclarations representation.
+     *
+     * @param {Array<object>} tools - Responses API tools
+     * @returns {{
+     *   functionDeclarations: Array<object>,
+     *   functionNameMap: Record<string, {name: string, namespace: string}>,
+     *   namespaceAliasMap: Record<string, string>,
+     *   namespaceFunctionCount: number
+     * }} Flattened declarations and reversible name mappings
+     * @private
+     */
+    _flattenResponseFunctionTools(tools) {
+        const functionDeclarations = [];
+        const functionNameMap = {};
+        const namespaceAliasMap = {};
+        const usedNames = new Set();
+        let namespaceFunctionCount = 0;
+
+        const addDeclaration = (funcDef, namespace = null) => {
+            if (!funcDef || typeof funcDef.name !== "string" || !funcDef.name) return;
+
+            let geminiName = funcDef.name;
+            if (namespace) {
+                geminiName = this._encodeResponseNamespaceFunctionName(namespace, funcDef.name);
+                const mapKey = `${namespace}\u0000${funcDef.name}`;
+                namespaceAliasMap[mapKey] = geminiName;
+                functionNameMap[geminiName] = { name: funcDef.name, namespace };
+                namespaceFunctionCount++;
+            }
+
+            if (usedNames.has(geminiName)) {
+                this.logger.warn(
+                    `[Adapter] Duplicate Responses API function name after namespace flattening, skipping: ${geminiName}`
+                );
+                return;
+            }
+            usedNames.add(geminiName);
+
+            const declaration = { name: geminiName };
+            const descriptionParts = [];
+            if (namespace) descriptionParts.push(`Responses API namespace: ${namespace}.`);
+            if (funcDef.description) descriptionParts.push(funcDef.description);
+            if (descriptionParts.length > 0) declaration.description = descriptionParts.join(" ");
+            if (funcDef.parameters) declaration.parametersJsonSchema = funcDef.parameters;
+            functionDeclarations.push(declaration);
+        };
+
+        for (const tool of Array.isArray(tools) ? tools : []) {
+            if (!tool || typeof tool !== "object") continue;
+            if (tool.type === "function") {
+                const funcDef = tool.function && typeof tool.function === "object" ? tool.function : tool;
+                addDeclaration(funcDef);
+            } else if (tool.type === "namespace" && typeof tool.name === "string" && Array.isArray(tool.tools)) {
+                for (const nestedTool of tool.tools) {
+                    if (!nestedTool || nestedTool.type !== "function") continue;
+                    const funcDef =
+                        nestedTool.function && typeof nestedTool.function === "object"
+                            ? nestedTool.function
+                            : nestedTool;
+                    addDeclaration(funcDef, tool.name);
+                }
+            }
+        }
+
+        return { functionDeclarations, functionNameMap, namespaceAliasMap, namespaceFunctionCount };
+    }
+
+    /**
      * Ensure thoughtSignature is present in Gemini native format requests
      * This handles direct Gemini API calls where functionCall may lack thoughtSignature
      * Note: Only functionCall needs thoughtSignature, functionResponse does NOT need it
@@ -1684,6 +1782,9 @@ class FormatConverter {
                         }
                     } else if (part?.functionCall) {
                         const funcCall = part.functionCall;
+                        const responseFunctionIdentity = streamState.responseFunctionNameMap?.[funcCall.name] || {
+                            name: funcCall.name,
+                        };
                         const itemId = `fc_${this._generateRequestId()}`;
                         // Pass the Gemini-issued function call id through as the Responses API
                         // `call_id` so it round-trips back into `functionCall.id` /
@@ -1701,7 +1802,10 @@ class FormatConverter {
                                 arguments: "",
                                 call_id: callId,
                                 id: itemId,
-                                name: funcCall.name,
+                                name: responseFunctionIdentity.name,
+                                ...(responseFunctionIdentity.namespace
+                                    ? { namespace: responseFunctionIdentity.namespace }
+                                    : {}),
                                 status: "in_progress",
                                 type: "function_call",
                             },
@@ -1724,7 +1828,10 @@ class FormatConverter {
                             arguments: args,
                             call_id: callId,
                             id: itemId,
-                            name: funcCall.name,
+                            name: responseFunctionIdentity.name,
+                            ...(responseFunctionIdentity.namespace
+                                ? { namespace: responseFunctionIdentity.namespace }
+                                : {}),
                             status: "completed",
                             type: "function_call",
                         };
@@ -1736,7 +1843,7 @@ class FormatConverter {
                         });
 
                         this.logger.info(
-                            `[Adapter] Converted Gemini functionCall to Response API function_call: ${funcCall.name} (call_id: ${callId})`
+                            `[Adapter] Converted Gemini functionCall to Response API function_call: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
                         );
                     }
                 }
@@ -1919,7 +2026,12 @@ class FormatConverter {
      * @param {string} modelName - Model name
      * @returns {object} - OpenAI Response API format response
      */
-    convertGoogleToResponseAPINonStream(googleResponse, modelName = "gemini-flash-lite-latest", responseDefaults = {}) {
+    convertGoogleToResponseAPINonStream(
+        googleResponse,
+        modelName = "gemini-flash-lite-latest",
+        responseDefaults = {},
+        responseFunctionNameMap = {}
+    ) {
         try {
             this.logger.debug(
                 `[Adapter] Debug: Received Google response for Response API non-stream: ${JSON.stringify(googleResponse)}`
@@ -2003,6 +2115,9 @@ class FormatConverter {
                 } else if (part.functionCall) {
                     // Function call
                     const funcCall = part.functionCall;
+                    const responseFunctionIdentity = responseFunctionNameMap?.[funcCall.name] || {
+                        name: funcCall.name,
+                    };
                     // Pass through the Gemini-issued call id so it round-trips into
                     // `functionCall.id`/`functionResponse.id` on the next request.
                     const callId =
@@ -2013,12 +2128,15 @@ class FormatConverter {
                         arguments: JSON.stringify(funcCall.args || {}),
                         call_id: callId,
                         id: `fc-${this._generateRequestId()}`,
-                        name: funcCall.name,
+                        name: responseFunctionIdentity.name,
+                        ...(responseFunctionIdentity.namespace
+                            ? { namespace: responseFunctionIdentity.namespace }
+                            : {}),
                         status: "completed",
                         type: "function_call",
                     });
                     this.logger.info(
-                        `[Adapter] Converted Gemini functionCall to Response API function_call: ${funcCall.name} (call_id: ${callId})`
+                        `[Adapter] Converted Gemini functionCall to Response API function_call: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
                     );
                 }
             }
@@ -3096,6 +3214,31 @@ class FormatConverter {
             );
         }
 
+        const toolChoice = responseBody.tool_choice;
+
+        // `tool_choice: {type:"allowed_tools", tools:[...]}` can provide the
+        // effective tool set. Flatten namespace tools before translating both
+        // declarations and historical function_call items so Gemini sees one
+        // consistent internal function name in both places.
+        let effectiveTools = responseBody.tools;
+        if (
+            toolChoice &&
+            typeof toolChoice === "object" &&
+            toolChoice.type === "allowed_tools" &&
+            Array.isArray(toolChoice.tools) &&
+            toolChoice.tools.length > 0
+        ) {
+            effectiveTools = toolChoice.tools;
+        }
+        const responseFunctionTools = this._flattenResponseFunctionTools(effectiveTools);
+        const toGeminiFunctionName = (name, namespace) => {
+            if (typeof namespace !== "string" || !namespace || typeof name !== "string" || !name) return name;
+            return (
+                responseFunctionTools.namespaceAliasMap[`${namespace}\u0000${name}`] ||
+                this._encodeResponseNamespaceFunctionName(namespace, name)
+            );
+        };
+
         const googleContents = [];
         let systemInstructionText = "";
 
@@ -3204,15 +3347,16 @@ class FormatConverter {
                     continue;
                 }
                 if (scannedItem.type === "function_call" && typeof scannedItem.name === "string") {
+                    const geminiFunctionName = toGeminiFunctionName(scannedItem.name, scannedItem.namespace);
                     toolCallsInOrder.push({
                         callId:
                             typeof scannedItem.call_id === "string" && scannedItem.call_id ? scannedItem.call_id : null,
                         index: itemIndex,
                         matched: false,
-                        name: scannedItem.name,
+                        name: geminiFunctionName,
                     });
                     if (typeof scannedItem.call_id === "string" && scannedItem.call_id) {
-                        callIdToName[scannedItem.call_id] = scannedItem.name;
+                        callIdToName[scannedItem.call_id] = geminiFunctionName;
                     }
                 } else if (scannedItem.type === "function_call_output") {
                     const outputCallId =
@@ -3313,7 +3457,7 @@ class FormatConverter {
                         const functionCallPart = {
                             functionCall: {
                                 args: safeParseJSON(rawArgs, "unparsed_arguments"),
-                                name: item.name,
+                                name: toGeminiFunctionName(item.name, item.namespace),
                             },
                         };
                         if (pendingFunctionCallParts.length === 0) {
@@ -3497,7 +3641,6 @@ class FormatConverter {
 
         googleRequest.generationConfig = generationConfig;
 
-        const toolChoice = responseBody.tool_choice;
         const responseHostedToolTypes = new Set([
             "code_interpreter",
             "computer_use_preview",
@@ -3507,21 +3650,9 @@ class FormatConverter {
         ]);
 
         // Convert tools
-        // `tool_choice: {type:"allowed_tools", tools:[...]}` can provide the effective tool set.
-        let effectiveTools = responseBody.tools;
-        if (
-            toolChoice &&
-            typeof toolChoice === "object" &&
-            toolChoice.type === "allowed_tools" &&
-            Array.isArray(toolChoice.tools) &&
-            toolChoice.tools.length > 0
-        ) {
-            effectiveTools = toolChoice.tools;
-        }
-
         const tools = effectiveTools;
         if (tools && Array.isArray(tools) && tools.length > 0) {
-            const functionDeclarations = [];
+            const functionDeclarations = responseFunctionTools.functionDeclarations;
             let hasCodeExecution = false;
             let hasWebSearch = false;
 
@@ -3536,23 +3667,6 @@ class FormatConverter {
                     this.logger.debug(
                         "[Adapter] computer_use_preview tool detected but not supported by Gemini, skipping..."
                     );
-                } else if (tool.type === "function") {
-                    // Custom function tool (Responses API: {type:"function", name, description, parameters})
-                    // Also accept Chat Completions style: {type:"function", function:{name, description, parameters}}
-                    const funcDef = tool.function && typeof tool.function === "object" ? tool.function : tool;
-                    if (!funcDef || !funcDef.name) continue;
-                    const declaration = {
-                        name: funcDef.name,
-                    };
-
-                    if (funcDef.description) {
-                        declaration.description = funcDef.description;
-                    }
-
-                    if (funcDef.parameters) {
-                        declaration.parametersJsonSchema = funcDef.parameters;
-                    }
-                    functionDeclarations.push(declaration);
                 }
             }
 
@@ -3562,6 +3676,11 @@ class FormatConverter {
                 this.logger.info(
                     `[Adapter] Converted ${functionDeclarations.length} OpenAI Response API tool(s) to Gemini format`
                 );
+                if (responseFunctionTools.namespaceFunctionCount > 0) {
+                    this.logger.info(
+                        `[Adapter] Flattened ${responseFunctionTools.namespaceFunctionCount} namespaced Responses API function(s) for Gemini and enabled reversible name mapping`
+                    );
+                }
             }
 
             if (hasWebSearch) {
@@ -3636,12 +3755,7 @@ class FormatConverter {
                             functionCallingConfig.mode = "ANY";
                         }
 
-                        const names = Array.isArray(tools)
-                            ? tools
-                                  .filter(t => t && typeof t === "object" && t.type === "function")
-                                  .map(t => (t.function && typeof t.function === "object" ? t.function.name : t.name))
-                                  .filter(Boolean)
-                            : [];
+                        const names = responseFunctionTools.functionDeclarations.map(declaration => declaration.name);
                         if (names.length > 0) {
                             functionCallingConfig.allowedFunctionNames = names;
                         }
@@ -3657,7 +3771,9 @@ class FormatConverter {
                     const funcName = toolChoice.name;
                     if (typeof funcName === "string" && funcName) {
                         functionCallingConfig.mode = "ANY";
-                        functionCallingConfig.allowedFunctionNames = [funcName];
+                        functionCallingConfig.allowedFunctionNames = [
+                            toGeminiFunctionName(funcName, toolChoice.namespace),
+                        ];
                     }
                 } else if (toolChoice.type === "web_search_preview" || toolChoice.type === "web_search") {
                     ensureGoogleSearchTool();
@@ -3721,7 +3837,12 @@ class FormatConverter {
             forceWebSearch: modelForceWebSearch,
         });
         this.logger.info("[Adapter] OpenAI Response API to Google translation complete.");
-        return { cleanModelName, googleRequest, modelStreamingMode };
+        return {
+            cleanModelName,
+            googleRequest,
+            modelStreamingMode,
+            responseFunctionNameMap: responseFunctionTools.functionNameMap,
+        };
     }
 }
 

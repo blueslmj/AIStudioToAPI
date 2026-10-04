@@ -1561,12 +1561,13 @@ class RequestHandler {
             }
 
             // Translate OpenAI Response format to Google format
-            let googleBody, model, modelStreamingMode;
+            let googleBody, model, modelStreamingMode, responseFunctionNameMap;
             try {
                 const result = await this.formatConverter.translateOpenAIResponseToGoogle(req.body);
                 googleBody = result.googleRequest;
                 model = result.cleanModelName;
                 modelStreamingMode = result.modelStreamingMode || null;
+                responseFunctionNameMap = result.responseFunctionNameMap || {};
             } catch (error) {
                 this.logger.error(
                     `❌ [Adapter] OpenAI Response request translation failed: ${error.message}, request ID: ${requestId}`
@@ -1710,6 +1711,7 @@ class RequestHandler {
                     await this._streamOpenAIResponseAPIResponse(currentQueue, res, model, {
                         requestId,
                         responseDefaults,
+                        responseFunctionNameMap,
                     });
                 } else {
                     // OpenAI Response API Fake Stream / Non-Stream mode
@@ -1840,6 +1842,7 @@ class RequestHandler {
 
                                 const streamState = {};
                                 streamState.responseDefaults = responseDefaults;
+                                streamState.responseFunctionNameMap = responseFunctionNameMap;
                                 const translatedChunk = this.formatConverter.translateGoogleToResponseAPIStream(
                                     fullBody,
                                     model,
@@ -1874,7 +1877,8 @@ class RequestHandler {
                                 res,
                                 model,
                                 requestId,
-                                responseDefaults
+                                responseDefaults,
+                                responseFunctionNameMap
                             );
                         }
                     } finally {
@@ -3481,6 +3485,7 @@ class RequestHandler {
     async _streamOpenAIResponseAPIResponse(messageQueue, res, model, streamOptions = {}) {
         const streamState = {
             responseDefaults: streamOptions.responseDefaults || {},
+            responseFunctionNameMap: streamOptions.responseFunctionNameMap || {},
         };
         const requestId = streamOptions.requestId;
         // Keep Response API sequence numbers consistent across helpers that might write to the same SSE response.
@@ -3640,7 +3645,14 @@ class RequestHandler {
         }
     }
 
-    async _sendOpenAIResponseAPINonStreamResponse(messageQueue, res, model, requestId, responseDefaults = {}) {
+    async _sendOpenAIResponseAPINonStreamResponse(
+        messageQueue,
+        res,
+        model,
+        requestId,
+        responseDefaults = {},
+        responseFunctionNameMap = {}
+    ) {
         let fullBody = "";
         let receiving = true;
         while (receiving) {
@@ -3670,7 +3682,8 @@ class RequestHandler {
             const responseAPIResponse = this.formatConverter.convertGoogleToResponseAPINonStream(
                 googleResponse,
                 model,
-                responseDefaults
+                responseDefaults,
+                responseFunctionNameMap
             );
             res.type("application/json").send(JSON.stringify(responseAPIResponse));
             this.logger.info(
