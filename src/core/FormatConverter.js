@@ -2868,7 +2868,6 @@ class FormatConverter {
     _accumulateClaudeServerToolMetadata(candidate, state) {
         if (!state.claudeServerToolMetadata) {
             state.claudeServerToolMetadata = {
-                groundingChunkKeys: new Set(),
                 groundingChunks: [],
                 groundingSupportKeys: new Set(),
                 groundingSupports: [],
@@ -2883,12 +2882,11 @@ class FormatConverter {
             accumulated.webSearchQueries.add(query);
         }
         if (Array.isArray(groundingMetadata?.groundingChunks)) {
-            for (const chunk of groundingMetadata.groundingChunks) {
-                const key = JSON.stringify(chunk);
-                if (accumulated.groundingChunkKeys.has(key)) continue;
-                accumulated.groundingChunkKeys.add(key);
-                accumulated.groundingChunks.push(chunk);
-            }
+            // In streaming responses, groundingChunkIndices address the ordered
+            // concatenation of every groundingChunks array received so far. Equal
+            // chunk values can still occupy different global slots, so deduplicating
+            // them would shift every later index and corrupt citation attribution.
+            accumulated.groundingChunks.push(...groundingMetadata.groundingChunks);
         }
         if (Array.isArray(groundingMetadata?.groundingSupports)) {
             for (const support of groundingMetadata.groundingSupports) {
