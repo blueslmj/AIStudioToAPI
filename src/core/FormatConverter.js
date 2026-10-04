@@ -13,6 +13,12 @@ const mime = require("mime-types");
  * Handles conversion between OpenAI and Google Gemini API formats
  */
 class FormatConverter {
+    static CLAUDE_CODE_EXECUTION_TOOL_TYPES = new Set([
+        "code_execution_20250825",
+        "code_execution_20260120",
+        "code_execution_20260521",
+    ]);
+
     // Placeholder signature for Gemini 3 functionCall validation
     static DUMMY_THOUGHT_SIGNATURE = "context_engineering_is_the_way_to_go";
     static GEMINI_BUILT_IN_TOOL_KEYS = [
@@ -2637,6 +2643,17 @@ class FormatConverter {
         };
     }
 
+    _formatGeminiExecutableCodeAsBashCommand(executableCode = {}) {
+        const code = typeof executableCode.code === "string" ? executableCode.code : "";
+        const language = String(executableCode.language || "python").toLowerCase();
+        if (language !== "python" && language !== "py") return code;
+
+        const codeLines = new Set(code.split(/\r?\n/));
+        let delimiter = "PYTHON_CODE";
+        while (codeLines.has(delimiter)) delimiter += "_";
+        return `python - <<'${delimiter}'\n${code}${code.endsWith("\n") ? "" : "\n"}${delimiter}`;
+    }
+
     _buildClaudeServerToolBlocks(candidate, state = {}, options = {}) {
         const includeCodeExecution = options.includeCodeExecution !== false;
         const includeMetadata = options.includeMetadata !== false;
@@ -2771,11 +2788,8 @@ class FormatConverter {
                     if (seenKey) state.serverToolSeenKeys.add(seenKey);
                     blocks.push({
                         id: toolUseId,
-                        input: {
-                            code: executableCode.code || "",
-                            language: String(executableCode.language || "python").toLowerCase(),
-                        },
-                        name: "code_execution",
+                        input: { command: this._formatGeminiExecutableCodeAsBashCommand(executableCode) },
+                        name: "bash_code_execution",
                         type: "server_tool_use",
                     });
                     if (geminiId) state.codeExecutionToolUseIds.set(geminiId, toolUseId);
@@ -2793,8 +2807,8 @@ class FormatConverter {
                         toolUseId = createToolUseId();
                         blocks.push({
                             id: toolUseId,
-                            input: { code: "", language: "python" },
-                            name: "code_execution",
+                            input: { command: "" },
+                            name: "bash_code_execution",
                             type: "server_tool_use",
                         });
                         state.serverToolUsage.code_execution_requests++;
@@ -2809,10 +2823,10 @@ class FormatConverter {
                             return_code: succeeded ? 0 : outcome === "OUTCOME_DEADLINE_EXCEEDED" ? 124 : 1,
                             stderr: succeeded ? "" : executionResult.output || "",
                             stdout: succeeded ? executionResult.output || "" : "",
-                            type: "code_execution_result",
+                            type: "bash_code_execution_result",
                         },
                         tool_use_id: toolUseId,
-                        type: "code_execution_tool_result",
+                        type: "bash_code_execution_tool_result",
                     });
                 }
             }
@@ -3096,10 +3110,11 @@ class FormatConverter {
         };
 
         const claudeServerToolBlockTypes = new Set([
+            "bash_code_execution_tool_result",
             "server_tool_use",
+            "text_editor_code_execution_tool_result",
             "web_search_tool_result",
             "web_fetch_tool_result",
-            "code_execution_tool_result",
         ]);
 
         const convertClaudeServerToolBlock = block => ({
@@ -3423,11 +3438,13 @@ class FormatConverter {
                 }
 
                 // Handle specialized code execution tool, mapped to Gemini codeExecution.
-                if (
-                    typeof tool.type === "string" &&
-                    tool.type.startsWith("code_execution_") &&
-                    tool.name === "code_execution"
-                ) {
+                if (typeof tool.type === "string" && tool.type.startsWith("code_execution_")) {
+                    if (
+                        tool.name !== "code_execution" ||
+                        !FormatConverter.CLAUDE_CODE_EXECUTION_TOOL_TYPES.has(tool.type)
+                    ) {
+                        throw new Error(`Unsupported Claude code execution tool: ${tool.type}`);
+                    }
                     hasCodeExecutionTool = true;
                     if (tool.name) builtInToolChoiceNames.add(tool.name);
                     this.logger.info(
