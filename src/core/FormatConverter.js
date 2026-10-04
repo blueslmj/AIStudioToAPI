@@ -3544,10 +3544,19 @@ class FormatConverter {
             if (!streamState.thinkingBlockStarted || streamState.thinkingBlockStopped) return;
 
             events.push({
+                delta: {
+                    signature: streamState.thinkingSignature || `proxy_thinking_${this._generateRequestId()}`,
+                    type: "signature_delta",
+                },
+                index: streamState.thinkingBlockIndex,
+                type: "content_block_delta",
+            });
+            events.push({
                 index: streamState.thinkingBlockIndex,
                 type: "content_block_stop",
             });
             streamState.thinkingBlockStopped = true;
+            streamState.thinkingSignature = null;
         };
 
         const closeTextBlock = () => {
@@ -3661,26 +3670,26 @@ class FormatConverter {
         if (candidateParts.length > 0) {
             for (const part of candidateParts) {
                 if (part.thought === true && part.text) {
-                    // Thinking content
+                    // Preserve Gemini thoughts as Claude thinking blocks. The proxy-issued
+                    // opaque signature makes the block replayable through this adapter.
                     closeTextBlock();
                     if (!streamState.thinkingBlockStarted || streamState.thinkingBlockStopped) {
                         events.push({
-                            content_block: { thinking: "", type: "thinking" },
+                            content_block: { signature: "", thinking: "", type: "thinking" },
                             index: streamState.contentBlockIndex,
                             type: "content_block_start",
                         });
                         streamState.thinkingBlockStarted = true;
                         streamState.thinkingBlockStopped = false;
                         streamState.thinkingBlockIndex = streamState.contentBlockIndex;
+                        streamState.thinkingSignature = `proxy_thinking_${this._generateRequestId()}`;
                         streamState.contentBlockIndex++;
                     }
-                    if (part.text) {
-                        events.push({
-                            delta: { thinking: part.text, type: "thinking_delta" },
-                            index: streamState.thinkingBlockIndex,
-                            type: "content_block_delta",
-                        });
-                    }
+                    events.push({
+                        delta: { thinking: part.text, type: "thinking_delta" },
+                        index: streamState.thinkingBlockIndex,
+                        type: "content_block_delta",
+                    });
                 } else if (part.text) {
                     // Regular text content
                     emitTextContent(part.text);
@@ -3844,11 +3853,11 @@ class FormatConverter {
         if (candidate.content && Array.isArray(candidate.content.parts)) {
             for (const part of candidate.content.parts) {
                 if (part.thought === true && part.text) {
-                    const thinkingBlock = {
+                    content.push({
+                        signature: `proxy_thinking_${this._generateRequestId()}`,
                         thinking: part.text,
                         type: "thinking",
-                    };
-                    content.push(thinkingBlock);
+                    });
                 } else if (part.text) {
                     content.push({
                         text: part.text,
