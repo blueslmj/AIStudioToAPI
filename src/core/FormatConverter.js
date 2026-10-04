@@ -2759,12 +2759,14 @@ class FormatConverter {
                     state.serverToolSeenKeys.add(searchKey);
                     const toolUseId = createToolUseId();
                     blocks.push({
+                        caller: { type: "direct" },
                         id: toolUseId,
                         input: { query: queries.join("\n") || "Google Search" },
                         name: "web_search",
                         type: "server_tool_use",
                     });
                     blocks.push({
+                        caller: { type: "direct" },
                         content: webResults,
                         tool_use_id: toolUseId,
                         type: "web_search_tool_result",
@@ -2792,6 +2794,7 @@ class FormatConverter {
 
                 const toolUseId = createToolUseId();
                 blocks.push({
+                    caller: { type: "direct" },
                     id: toolUseId,
                     input: { url },
                     name: "web_fetch",
@@ -2800,6 +2803,7 @@ class FormatConverter {
 
                 if (status.includes("SUCCESS")) {
                     blocks.push({
+                        caller: { type: "direct" },
                         content: {
                             content: {
                                 source: {
@@ -2820,6 +2824,7 @@ class FormatConverter {
                     });
                 } else {
                     blocks.push({
+                        caller: { type: "direct" },
                         content: {
                             error_code: status.includes("UNSAFE") ? "url_not_allowed" : "url_not_accessible",
                             type: "web_fetch_tool_result_error",
@@ -2844,6 +2849,7 @@ class FormatConverter {
                     const toolUseId = createToolUseId();
                     if (seenKey) state.serverToolSeenKeys.add(seenKey);
                     blocks.push({
+                        caller: { type: "direct" },
                         id: toolUseId,
                         input: { command: this._formatGeminiExecutableCodeAsBashCommand(executableCode) },
                         name: "bash_code_execution",
@@ -2863,6 +2869,7 @@ class FormatConverter {
                     if (!toolUseId) {
                         toolUseId = createToolUseId();
                         blocks.push({
+                            caller: { type: "direct" },
                             id: toolUseId,
                             input: { command: "" },
                             name: "bash_code_execution",
@@ -3704,6 +3711,7 @@ class FormatConverter {
                 if (block.type === "server_tool_use") {
                     events.push({
                         content_block: {
+                            caller: block.caller || { type: "direct" },
                             id: block.id,
                             input: {},
                             name: block.name,
@@ -3855,6 +3863,7 @@ class FormatConverter {
                     const toolUseId = `toolu_${this._generateRequestId()}`;
                     events.push({
                         content_block: {
+                            caller: { type: "direct" },
                             id: toolUseId,
                             input: {},
                             name: part.functionCall.name,
@@ -4005,6 +4014,7 @@ class FormatConverter {
                 } else if (part.functionCall) {
                     hasToolUse = true;
                     content.push({
+                        caller: { type: "direct" },
                         id: `toolu_${this._generateRequestId()}`,
                         input: part.functionCall.args || {},
                         name: part.functionCall.name,
