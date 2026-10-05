@@ -266,30 +266,61 @@ class FormatConverter {
             }
             usedNames.add(geminiName);
 
-            if (namespace) {
+            if (namespace || funcDef.type === "custom") {
                 const mapKey = `${namespace}\u0000${funcDef.name}`;
-                namespaceAliasMap[mapKey] = geminiName;
-                functionNameMap[geminiName] = { name: funcDef.name, namespace };
-                namespaceFunctionCount++;
+                if (namespace) {
+                    namespaceAliasMap[mapKey] = geminiName;
+                    namespaceFunctionCount++;
+                }
+                functionNameMap[geminiName] = {
+                    name: funcDef.name,
+                    ...(namespace ? { namespace } : {}),
+                    ...(funcDef.type === "custom" ? { type: "custom" } : {}),
+                };
             }
 
             const declaration = { name: geminiName };
             const descriptionParts = [];
             if (namespace) descriptionParts.push(`Responses API namespace: ${namespace}.`);
             if (funcDef.description) descriptionParts.push(funcDef.description);
+            if (funcDef.type === "custom") {
+                descriptionParts.push(
+                    "Put the exact raw tool input in the input string. Do not add wrappers or Markdown fences to that string."
+                );
+                const format = funcDef.format;
+                if (format?.type === "grammar") {
+                    if (!["lark", "regex"].includes(format.syntax) || typeof format.definition !== "string") {
+                        throw new Error(`Invalid custom tool grammar: ${funcDef.name}`);
+                    }
+                    descriptionParts.push(
+                        `The input must conform to this ${format.syntax} grammar:\n${format.definition}`
+                    );
+                    this.logger.warn(
+                        `[Adapter] Custom tool ${funcDef.name}: Gemini can only follow the grammar as instructions; constrained grammar decoding is unavailable.`
+                    );
+                } else if (format && format.type !== "text") {
+                    throw new Error(`Unsupported custom tool format: ${format.type}`);
+                }
+                declaration.parametersJsonSchema = {
+                    additionalProperties: false,
+                    properties: { input: { type: "string" } },
+                    required: ["input"],
+                    type: "object",
+                };
+            }
             if (descriptionParts.length > 0) declaration.description = descriptionParts.join(" ");
-            if (funcDef.parameters) declaration.parametersJsonSchema = funcDef.parameters;
+            if (funcDef.type !== "custom" && funcDef.parameters) declaration.parametersJsonSchema = funcDef.parameters;
             functionDeclarations.push(declaration);
         };
 
         for (const tool of Array.isArray(tools) ? tools : []) {
             if (!tool || typeof tool !== "object") continue;
-            if (tool.type === "function") {
+            if (tool.type === "function" || tool.type === "custom") {
                 const funcDef = tool.function && typeof tool.function === "object" ? tool.function : tool;
                 addDeclaration(funcDef);
             } else if (tool.type === "namespace" && typeof tool.name === "string" && Array.isArray(tool.tools)) {
                 for (const nestedTool of tool.tools) {
-                    if (!nestedTool || nestedTool.type !== "function") continue;
+                    if (!nestedTool || !["function", "custom"].includes(nestedTool.type)) continue;
                     const funcDef =
                         nestedTool.function && typeof nestedTool.function === "object"
                             ? nestedTool.function
@@ -2041,7 +2072,8 @@ class FormatConverter {
                         const responseFunctionIdentity = streamState.responseFunctionNameMap?.[funcCall.name] || {
                             name: funcCall.name,
                         };
-                        const itemId = `fc_${this._generateRequestId()}`;
+                        const isCustom = responseFunctionIdentity.type === "custom";
+                        const itemId = `${isCustom ? "ctc" : "fc"}_${this._generateRequestId()}`;
                         // Pass the Gemini-issued function call id through as the Responses API
                         // `call_id` so it round-trips back into `functionCall.id` /
                         // `functionResponse.id` on the next request (needed to pair parallel
@@ -2051,45 +2083,53 @@ class FormatConverter {
                                 ? funcCall.id
                                 : `call_${this._generateRequestId()}`;
                         const outputIndex = streamState.nextOutputIndex++;
-                        const args = JSON.stringify(funcCall.args || {});
+                        const args = isCustom ? funcCall.args?.input : JSON.stringify(funcCall.args || {});
+                        if (typeof args !== "string") {
+                            throw new Error(`Custom tool ${responseFunctionIdentity.name} returned a non-string input`);
+                        }
+                        const inputField = isCustom ? "input" : "arguments";
+                        const callType = isCustom ? "custom_tool_call" : "function_call";
+                        const inputEvent = isCustom
+                            ? "response.custom_tool_call_input"
+                            : "response.function_call_arguments";
 
                         pushEvent("response.output_item.added", {
                             item: {
-                                arguments: "",
                                 call_id: callId,
                                 id: itemId,
+                                [inputField]: "",
                                 name: responseFunctionIdentity.name,
                                 ...(responseFunctionIdentity.namespace
                                     ? { namespace: responseFunctionIdentity.namespace }
                                     : {}),
                                 status: "in_progress",
-                                type: "function_call",
+                                type: callType,
                             },
                             output_index: outputIndex,
                         });
 
-                        pushEvent("response.function_call_arguments.delta", {
+                        pushEvent(`${inputEvent}.delta`, {
                             delta: args,
                             item_id: itemId,
                             output_index: outputIndex,
                         });
 
-                        pushEvent("response.function_call_arguments.done", {
-                            arguments: args,
+                        pushEvent(`${inputEvent}.done`, {
+                            [inputField]: args,
                             item_id: itemId,
                             output_index: outputIndex,
                         });
 
                         const completedToolItem = {
-                            arguments: args,
                             call_id: callId,
                             id: itemId,
+                            [inputField]: args,
                             name: responseFunctionIdentity.name,
                             ...(responseFunctionIdentity.namespace
                                 ? { namespace: responseFunctionIdentity.namespace }
                                 : {}),
                             status: "completed",
-                            type: "function_call",
+                            type: callType,
                         };
                         streamState.outputItemsByIndex[outputIndex] = completedToolItem;
 
@@ -2099,7 +2139,7 @@ class FormatConverter {
                         });
 
                         this.logger.info(
-                            `[Adapter] Converted Gemini functionCall to Response API function_call: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
+                            `[Adapter] Converted Gemini functionCall to Response API ${callType}: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
                         );
                     }
                 }
@@ -2433,6 +2473,11 @@ class FormatConverter {
                     const responseFunctionIdentity = responseFunctionNameMap?.[funcCall.name] || {
                         name: funcCall.name,
                     };
+                    const isCustom = responseFunctionIdentity.type === "custom";
+                    const toolInput = isCustom ? funcCall.args?.input : JSON.stringify(funcCall.args || {});
+                    if (typeof toolInput !== "string") {
+                        throw new Error(`Custom tool ${responseFunctionIdentity.name} returned a non-string input`);
+                    }
                     // Pass through the Gemini-issued call id so it round-trips into
                     // `functionCall.id`/`functionResponse.id` on the next request.
                     const callId =
@@ -2440,18 +2485,18 @@ class FormatConverter {
                             ? funcCall.id
                             : `call_${this._generateRequestId()}`;
                     output.push({
-                        arguments: JSON.stringify(funcCall.args || {}),
+                        [isCustom ? "input" : "arguments"]: toolInput,
                         call_id: callId,
-                        id: `fc-${this._generateRequestId()}`,
+                        id: `${isCustom ? "ctc" : "fc"}-${this._generateRequestId()}`,
                         name: responseFunctionIdentity.name,
                         ...(responseFunctionIdentity.namespace
                             ? { namespace: responseFunctionIdentity.namespace }
                             : {}),
                         status: "completed",
-                        type: "function_call",
+                        type: isCustom ? "custom_tool_call" : "function_call",
                     });
                     this.logger.info(
-                        `[Adapter] Converted Gemini functionCall to Response API function_call: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
+                        `[Adapter] Converted Gemini functionCall to Response API ${isCustom ? "custom_tool_call" : "function_call"}: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
                     );
                 }
             }
@@ -4147,14 +4192,22 @@ class FormatConverter {
         // `tool_choice: {type:"allowed_tools", tools:[...]}` contains selectors,
         // not full tool definitions. Resolve those selectors against responseBody.tools
         // before flattening namespace tools so schemas and descriptions are preserved.
-        let effectiveTools = responseBody.tools;
+        const availableTools = [
+            ...(Array.isArray(responseBody.tools) ? responseBody.tools : []),
+            ...(Array.isArray(responseBody.input)
+                ? responseBody.input.flatMap(item =>
+                      item?.type === "additional_tools" && Array.isArray(item.tools) ? item.tools : []
+                  )
+                : []),
+        ];
+        let effectiveTools = availableTools;
         if (
             toolChoice &&
             typeof toolChoice === "object" &&
             toolChoice.type === "allowed_tools" &&
             Array.isArray(toolChoice.tools)
         ) {
-            effectiveTools = this._filterResponseToolsBySelectors(responseBody.tools, toolChoice.tools);
+            effectiveTools = this._filterResponseToolsBySelectors(availableTools, toolChoice.tools);
         }
         const responseFunctionTools = this._flattenResponseFunctionTools(effectiveTools);
         const toGeminiFunctionName = (name, namespace) => {
@@ -4414,7 +4467,10 @@ class FormatConverter {
                 if (!scannedItem || typeof scannedItem !== "object") {
                     continue;
                 }
-                if (scannedItem.type === "function_call" && typeof scannedItem.name === "string") {
+                if (
+                    ["function_call", "custom_tool_call"].includes(scannedItem.type) &&
+                    typeof scannedItem.name === "string"
+                ) {
                     const geminiFunctionName = toGeminiFunctionName(scannedItem.name, scannedItem.namespace);
                     toolCallsInOrder.push({
                         callId:
@@ -4426,7 +4482,7 @@ class FormatConverter {
                     if (typeof scannedItem.call_id === "string" && scannedItem.call_id) {
                         callIdToName[scannedItem.call_id] = geminiFunctionName;
                     }
-                } else if (scannedItem.type === "function_call_output") {
+                } else if (["function_call_output", "custom_tool_call_output"].includes(scannedItem.type)) {
                     const outputCallId =
                         typeof scannedItem.call_id === "string" && scannedItem.call_id ? scannedItem.call_id : null;
                     if (outputCallId) {
@@ -4514,11 +4570,11 @@ class FormatConverter {
                         role: "user",
                     });
                 } else if (item && typeof item === "object") {
-                    if (item.role === "system" || item.role === "developer") {
+                    if (item.type === "additional_tools" || item.role === "system" || item.role === "developer") {
                         continue;
                     }
                     // Handle different message types in Response API
-                    if (item.type === "function_call") {
+                    if (item.type === "function_call" || item.type === "custom_tool_call") {
                         // Function call from model (assistant message with tool call).
                         // A tool round closes as soon as its outputs begin, so starting a new
                         // functionCall turn after pending responses flushes that round first.
@@ -4531,7 +4587,10 @@ class FormatConverter {
                                 : undefined;
                         const functionCallPart = {
                             functionCall: {
-                                args: safeParseJSON(rawArgs, "unparsed_arguments"),
+                                args:
+                                    item.type === "custom_tool_call"
+                                        ? { input: item.input }
+                                        : safeParseJSON(rawArgs, "unparsed_arguments"),
                                 name: toGeminiFunctionName(item.name, item.namespace),
                             },
                         };
@@ -4545,7 +4604,7 @@ class FormatConverter {
                         this.logger.debug(
                             `[Adapter] Converted Response API function_call to Gemini functionCall: ${item.name}`
                         );
-                    } else if (item.type === "function_call_output") {
+                    } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
                         // Function output (tool result from user). Responses must live in the
                         // user turn directly following the model turn with the calls, so close
                         // the pending functionCall turn first and keep accumulating outputs.
@@ -4848,7 +4907,18 @@ class FormatConverter {
                     // Force a specific custom tool; map to Gemini "ANY" with allowed function name.
                     if (typeof toolChoice.name === "string" && toolChoice.name) {
                         functionCallingConfig.mode = "ANY";
-                        functionCallingConfig.allowedFunctionNames = [toolChoice.name];
+                        const geminiName = toGeminiFunctionName(toolChoice.name, toolChoice.namespace);
+                        if (
+                            !responseFunctionTools.functionDeclarations.some(
+                                declaration => declaration.name === geminiName
+                            ) ||
+                            responseFunctionTools.functionNameMap[geminiName]?.type !== "custom"
+                        ) {
+                            throw new Error(
+                                `Custom tool_choice refers to an undeclared custom tool: ${toolChoice.name}`
+                            );
+                        }
+                        functionCallingConfig.allowedFunctionNames = [geminiName];
                     }
                 } else if (toolChoice.type === "function") {
                     // Back-compat with Chat Completions style: { type:"function", name:"..." }
