@@ -4168,21 +4168,130 @@ class FormatConverter {
         const googleContents = [];
         let systemInstructionText = "";
 
+        const isPlainObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
+        const ensureJSONObject = (value, fallbackKey) => (isPlainObject(value) ? value : { [fallbackKey]: value });
         const safeParseJSON = (value, fallbackKey) => {
-            if (value && typeof value === "object") {
-                return value;
-            }
-
             if (typeof value !== "string") {
-                return { [fallbackKey]: value };
+                return ensureJSONObject(value, fallbackKey);
             }
 
             try {
-                return JSON.parse(value || "{}");
+                return ensureJSONObject(JSON.parse(value || "{}"), fallbackKey);
             } catch (e) {
                 this.logger.warn(`[Adapter] Failed to parse JSON for ${fallbackKey}: ${e.message}`);
                 return { [fallbackKey]: value };
             }
+        };
+
+        const supportedFunctionResponseMimeTypes = new Set([
+            "application/pdf",
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "text/plain",
+        ]);
+        const loadFunctionResponseMedia = async (contentPart, itemIndex) => {
+            const isImage = contentPart?.type === "input_image";
+            const source = isImage
+                ? this.normalizeImageUrl(contentPart.image_url)
+                : contentPart?.file_data || contentPart?.file_url;
+
+            if (typeof source !== "string" || !source) {
+                this.logger.warn(
+                    `[Adapter] Skipping Response API ${contentPart?.type || "unknown"} function output because it has no supported data source.`
+                );
+                return null;
+            }
+
+            let data;
+            let mimeType;
+            if (source.startsWith("data:")) {
+                const match = source.match(/^data:([^;,]+);base64,(.+)$/s);
+                if (!match) {
+                    this.logger.warn("[Adapter] Skipping malformed data URL in Response API function output.");
+                    return null;
+                }
+                [, mimeType, data] = match;
+            } else if (/^https?:\/\//.test(source)) {
+                try {
+                    const response = await axios.get(source, { responseType: "arraybuffer" });
+                    data = Buffer.from(response.data, "binary").toString("base64");
+                    mimeType = response.headers["content-type"]?.split(";", 1)[0];
+                    if (!mimeType || mimeType === "application/octet-stream") {
+                        mimeType = mime.lookup(contentPart.filename || source) || undefined;
+                    }
+                } catch (error) {
+                    this.logger.warn(
+                        `[Adapter] Failed to download Response API function output media from ${source}: ${error.message}`
+                    );
+                    return null;
+                }
+            } else if (!isImage && contentPart.file_data) {
+                data = contentPart.file_data;
+                mimeType = mime.lookup(contentPart.filename || "") || "application/octet-stream";
+            } else {
+                this.logger.warn("[Adapter] Skipping unsupported media URL in Response API function output.");
+                return null;
+            }
+
+            if (!supportedFunctionResponseMimeTypes.has(mimeType)) {
+                this.logger.warn(
+                    `[Adapter] Skipping Response API function output media with unsupported MIME type: ${mimeType || "unknown"}`
+                );
+                return null;
+            }
+
+            const extension = mime.extension(mimeType);
+            const displayName =
+                contentPart.filename || `function-output-${itemIndex + 1}${extension ? `.${extension}` : ""}`;
+            return {
+                displayName,
+                part: {
+                    inlineData: {
+                        data,
+                        displayName,
+                        mimeType,
+                    },
+                },
+            };
+        };
+
+        const convertFunctionCallOutput = async output => {
+            if (!Array.isArray(output)) {
+                return { response: safeParseJSON(output, "unparsed_output") };
+            }
+
+            const normalizedOutput = [];
+            const parts = [];
+            for (let itemIndex = 0; itemIndex < output.length; itemIndex++) {
+                const contentPart = output[itemIndex];
+                if (contentPart?.type === "input_text") {
+                    normalizedOutput.push({ text: contentPart.text || "", type: "input_text" });
+                    continue;
+                }
+
+                if (contentPart?.type === "input_image" || contentPart?.type === "input_file") {
+                    const media = await loadFunctionResponseMedia(contentPart, itemIndex);
+                    if (media) {
+                        normalizedOutput.push({
+                            content: { $ref: media.displayName },
+                            ...(contentPart.filename ? { filename: contentPart.filename } : {}),
+                            type: contentPart.type,
+                        });
+                        parts.push(media.part);
+                    } else {
+                        normalizedOutput.push(contentPart);
+                    }
+                    continue;
+                }
+
+                normalizedOutput.push(contentPart);
+            }
+
+            return {
+                response: { output: normalizedOutput },
+                ...(parts.length > 0 ? { parts } : {}),
+            };
         };
 
         const serializeResponseTextPart = contentPart => {
@@ -4451,9 +4560,10 @@ class FormatConverter {
                             id: undefined,
                             name: "unknown_function",
                         };
+                        const convertedOutput = await convertFunctionCallOutput(item.output);
                         const functionResponseBody = {
                             name: responseMeta.name,
-                            response: safeParseJSON(item.output, "unparsed_output"),
+                            ...convertedOutput,
                         };
                         if (responseMeta.id) {
                             functionResponseBody.id = responseMeta.id;
