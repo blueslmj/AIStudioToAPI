@@ -4260,9 +4260,16 @@ class FormatConverter {
                     if (outputCallId) {
                         toolCallsAnsweredByCallId.add(outputCallId);
                     }
+                    // Prefer the name already resolved from the paired call. Namespaced
+                    // Responses tools use a flattened Gemini alias, so the raw output
+                    // name (for example, `lookup`) must not replace the alias associated
+                    // with its call_id. If the call is not present in this input history,
+                    // rebuild the same deterministic alias from the explicit namespace.
                     let functionName =
-                        (typeof scannedItem.name === "string" && scannedItem.name) ||
-                        (outputCallId ? callIdToName[outputCallId] : undefined);
+                        (outputCallId ? callIdToName[outputCallId] : undefined) ||
+                        (typeof scannedItem.name === "string" && scannedItem.name
+                            ? toGeminiFunctionName(scannedItem.name, scannedItem.namespace)
+                            : undefined);
                     if (!functionName) {
                         // No usable call_id/name on the output item. When the history holds
                         // exactly one call issued before this output that is still unmatched,
