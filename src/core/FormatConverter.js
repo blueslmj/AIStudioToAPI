@@ -2278,7 +2278,7 @@ class FormatConverter {
                             output_index: outputIndex,
                         });
 
-                        this.logger.info(
+                        this.logger.debug(
                             `[Adapter] Converted Gemini functionCall to Response API ${callType}: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
                         );
                     }
@@ -2646,7 +2646,7 @@ class FormatConverter {
                         status: "completed",
                         type: isCustom ? "custom_tool_call" : "function_call",
                     });
-                    this.logger.info(
+                    this.logger.debug(
                         `[Adapter] Converted Gemini functionCall to Response API ${isCustom ? "custom_tool_call" : "function_call"}: ${responseFunctionIdentity.namespace ? `${responseFunctionIdentity.namespace}.` : ""}${responseFunctionIdentity.name} (call_id: ${callId})`
                     );
                 }
@@ -4730,7 +4730,7 @@ class FormatConverter {
                         if (eliminationCandidate) {
                             eliminationCandidate.matched = true;
                             functionName = eliminationCandidate.name;
-                            this.logger.info(
+                            this.logger.debug(
                                 `[Adapter] Paired function_call_output with single unmatched function_call by elimination: ${eliminationCandidate.name}`
                             );
                         } else {
@@ -5049,7 +5049,7 @@ class FormatConverter {
                     `[Adapter] Converted ${functionDeclarations.length} OpenAI Response API tool(s) to Gemini format`
                 );
                 if (responseFunctionTools.namespaceFunctionCount > 0) {
-                    this.logger.info(
+                    this.logger.debug(
                         `[Adapter] Flattened ${responseFunctionTools.namespaceFunctionCount} namespaced Responses API function(s) for Gemini and enabled reversible name mapping`
                     );
                 }
