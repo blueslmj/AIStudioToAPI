@@ -1719,6 +1719,8 @@ class FormatConverter {
             streamState.completed = false;
         };
 
+        // include controls conversion but is a request field, not a Response field.
+        const { include: responseInclude, ...responseFields } = streamState.responseDefaults || {};
         const buildResponseObject = (overrides = {}) => ({
             completed_at: null,
             created_at: streamState.created_at,
@@ -1751,7 +1753,7 @@ class FormatConverter {
             truncation: "disabled",
             usage: null,
             user: null,
-            ...(streamState.responseDefaults || {}),
+            ...responseFields,
             ...overrides,
             // This proxy does not support OpenAI-side persistence.
             ...{ store: false },
@@ -1842,6 +1844,9 @@ class FormatConverter {
             return streamState.reasoningItem;
         };
 
+        const includeWebSearchSources =
+            Array.isArray(responseInclude) && responseInclude.includes("web_search_call.action.sources");
+
         const ensureWebSearchCall = (googleCallId, queries = []) => {
             const normalizedQueries = this._normalizeWebSearchQueries(queries);
             const lookupKey =
@@ -1903,6 +1908,12 @@ class FormatConverter {
         const completeWebSearchCall = searchCall => {
             if (!searchCall || searchCall.status === "completed") return;
 
+            if (includeWebSearchSources && searchCall.action.type === "search") {
+                // Gemini reports sources in response-level grounding metadata, which
+                // can arrive after the native tool response. Finalize only once all
+                // chunks have arrived so output_item.done matches response.completed.
+                searchCall.action.sources = this._extractResponseWebSearchSources(streamState.groundingChunks);
+            }
             searchCall.status = "completed";
             const completedItem = {
                 action: searchCall.action,
@@ -2198,8 +2209,7 @@ class FormatConverter {
 
                     if (part?.toolResponse?.toolType === "GOOGLE_SEARCH_WEB") {
                         const toolResponse = part.toolResponse;
-                        const searchCall = findWebSearchCall(toolResponse.id) || ensureWebSearchCall(toolResponse.id);
-                        completeWebSearchCall(searchCall);
+                        findWebSearchCall(toolResponse.id) || ensureWebSearchCall(toolResponse.id);
                         continue;
                     }
 
@@ -2362,6 +2372,9 @@ class FormatConverter {
                 if (
                     grounding.queries.length > 0 ||
                     (grounding.annotations.length > 0 &&
+                        !streamState.hasNativeUrlContext &&
+                        streamState.urlContextUrls.length === 0) ||
+                    (streamState.groundingChunks.length > 0 &&
                         !streamState.hasNativeUrlContext &&
                         streamState.urlContextUrls.length === 0) ||
                     streamState.webSearchCallOrder.length > 0
@@ -2582,6 +2595,7 @@ class FormatConverter {
         responseDefaults = {},
         responseFunctionNameMap = {}
     ) {
+        const { include: responseInclude, ...responseFields } = responseDefaults || {};
         try {
             this.logger.debug(
                 `[Adapter] Debug: Received Google response for Response API non-stream: ${JSON.stringify(googleResponse)}`
@@ -2639,7 +2653,7 @@ class FormatConverter {
                     },
                     total_tokens: 0,
                 },
-                ...(responseDefaults || {}),
+                ...responseFields,
                 // This proxy does not support OpenAI-side persistence.
                 ...{ store: false },
             };
@@ -2650,6 +2664,35 @@ class FormatConverter {
         const messagePartRanges = new Map();
         let reasoningContent = "";
         let webSearchQueries = [];
+        const nativeSearchItems = [];
+        const nativeSearchItemsByGoogleId = new Map();
+        const createNativeSearchItem = queries => {
+            const normalizedQueries = this._normalizeWebSearchQueries(queries);
+            const item = {
+                action: {
+                    ...(normalizedQueries.length > 0 ? { queries: normalizedQueries } : {}),
+                    type: "search",
+                },
+                id: `ws_${this._generateRequestId()}`,
+                status: "completed",
+                type: "web_search_call",
+            };
+            nativeSearchItems.push(item);
+            output.push(item);
+            return item;
+        };
+        const ensureNativeSearchItem = (googleCallId, queries) => {
+            const hasId = typeof googleCallId === "string" && googleCallId;
+            let item = hasId ? nativeSearchItemsByGoogleId.get(googleCallId) : nativeSearchItems.at(-1);
+            const normalizedQueries = this._normalizeWebSearchQueries(queries);
+            if (!item) {
+                item = createNativeSearchItem(normalizedQueries);
+                if (hasId) nativeSearchItemsByGoogleId.set(googleCallId, item);
+            } else if (normalizedQueries.length > 0 && (item.action.queries || []).length === 0) {
+                item.action.queries = normalizedQueries;
+            }
+            return item;
+        };
         const hasNativeWebSearch =
             Array.isArray(candidate.content?.parts) &&
             candidate.content.parts.some(
@@ -2678,10 +2721,14 @@ class FormatConverter {
                             "[Image output omitted: Responses API image outputs are disabled by this proxy.]";
                     }
                 } else if (part?.toolCall?.toolType === "GOOGLE_SEARCH_WEB") {
+                    const queries = part.toolCall.args?.queries || part.toolCall.args?.query;
                     webSearchQueries = this._normalizeWebSearchQueries([
                         ...webSearchQueries,
-                        ...this._normalizeWebSearchQueries(part.toolCall.args?.queries || part.toolCall.args?.query),
+                        ...this._normalizeWebSearchQueries(queries),
                     ]);
+                    ensureNativeSearchItem(part.toolCall.id, queries);
+                } else if (part?.toolResponse?.toolType === "GOOGLE_SEARCH_WEB") {
+                    ensureNativeSearchItem(part.toolResponse.id);
                 } else if (part.functionCall) {
                     // Function call
                     const funcCall = part.functionCall;
@@ -2747,21 +2794,43 @@ class FormatConverter {
                   : this._extractResponseUrlContextUrls(candidate.urlContextMetadata || candidate.url_context_metadata);
         const hasUrlContext = urlCalls.length > 0 || urlResults.length > 0 || urlContextUrls.length > 0;
         if (webSearchQueries.length === 0) webSearchQueries = grounding.queries;
-        if (
-            hasNativeWebSearch ||
+        const requestedSearchSources =
+            Array.isArray(responseInclude) && responseInclude.includes("web_search_call.action.sources");
+        const sources = requestedSearchSources
+            ? this._extractResponseWebSearchSources(candidate.groundingMetadata?.groundingChunks)
+            : null;
+        if (hasNativeWebSearch) {
+            const lastSearchItem = nativeSearchItems.at(-1);
+            if (lastSearchItem && webSearchQueries.length > 0 && (lastSearchItem.action.queries || []).length === 0) {
+                lastSearchItem.action.queries = webSearchQueries;
+            }
+            if (requestedSearchSources) {
+                nativeSearchItems.forEach(item => {
+                    item.action.sources = sources;
+                });
+            }
+        } else if (
             webSearchQueries.length > 0 ||
             (!hasUrlContext &&
                 (grounding.annotations.length > 0 || candidate.groundingMetadata?.groundingChunks?.length > 0))
         ) {
-            output.push({
+            const searchItem = {
                 action: {
                     ...(webSearchQueries.length > 0 ? { queries: webSearchQueries } : {}),
+                    ...(requestedSearchSources ? { sources } : {}),
                     type: "search",
                 },
                 id: `ws_${this._generateRequestId()}`,
                 status: "completed",
                 type: "web_search_call",
-            });
+            };
+            // Grounding-only search metadata arrives after the model content but
+            // represents work performed before the resulting message.
+            const firstMessageLikeIndex = output.findIndex(item =>
+                ["function_call", "custom_tool_call"].includes(item.type)
+            );
+            if (firstMessageLikeIndex < 0) output.push(searchItem);
+            else output.splice(firstMessageLikeIndex, 0, searchItem);
         }
 
         for (const url of urlContextUrls) {
@@ -2835,7 +2904,7 @@ class FormatConverter {
                 },
                 total_tokens: usage.total_tokens,
             },
-            ...(responseDefaults || {}),
+            ...responseFields,
             // This proxy does not support OpenAI-side persistence.
             ...{ store: false },
         };
@@ -2873,6 +2942,15 @@ class FormatConverter {
         return entries
             .map(entry => entry?.retrievedUrl || entry?.retrieved_url)
             .filter(url => typeof url === "string" && url);
+    }
+
+    _extractResponseWebSearchSources(chunks) {
+        // Use every web grounding chunk, including sources without an inline
+        // citation. URL Context remains open_page; its schema has no sources field.
+        const urls = (Array.isArray(chunks) ? chunks : [])
+            .map(chunk => chunk?.web?.uri)
+            .filter(url => typeof url === "string" && url.trim());
+        return [...new Set(urls)].map(url => ({ type: "url", url }));
     }
 
     _utf8ByteOffsetToStringIndex(value, byteOffset) {

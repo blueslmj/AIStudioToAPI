@@ -1518,6 +1518,7 @@ class RequestHandler {
                 return chunks.length > 0 ? chunks.join("\n") : null;
             };
             const responseDefaultsRaw = {
+                include: Array.isArray(req.body?.include) ? req.body.include : undefined,
                 instructions: normalizeInstructions(req.body?.instructions),
                 max_output_tokens: req.body?.max_output_tokens ?? null,
                 metadata:
