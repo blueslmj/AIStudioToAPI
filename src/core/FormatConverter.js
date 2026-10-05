@@ -1850,7 +1850,11 @@ class FormatConverter {
             const existing = streamState.webSearchCallsByGoogleId[lookupKey];
 
             if (existing) {
-                if (normalizedQueries.length > 0 && (existing.action.queries || []).length === 0) {
+                if (
+                    existing.status !== "completed" &&
+                    normalizedQueries.length > 0 &&
+                    (existing.action.queries || []).length === 0
+                ) {
                     existing.action.queries = normalizedQueries;
                 }
                 return existing;
@@ -2364,7 +2368,11 @@ class FormatConverter {
                     let searchCall = findWebSearchCall();
                     if (!searchCall) {
                         searchCall = ensureWebSearchCall(null, grounding.queries);
-                    } else if ((searchCall.action.queries || []).length === 0 && grounding.queries.length > 0) {
+                    } else if (
+                        searchCall.status !== "completed" &&
+                        (searchCall.action.queries || []).length === 0 &&
+                        grounding.queries.length > 0
+                    ) {
                         searchCall.action.queries = grounding.queries;
                     }
                     for (const lookupKey of streamState.webSearchCallOrder) {
