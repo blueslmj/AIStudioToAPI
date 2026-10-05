@@ -4554,8 +4554,14 @@ class FormatConverter {
 
             for (const tool of tools) {
                 if (tool.type === "web_search_preview" || tool.type === "web_search") {
-                    if (tool.external_web_access !== false) {
-                        hasWebSearch = true;
+                    hasWebSearch = true;
+                    if (tool.type === "web_search" && tool.external_web_access === false) {
+                        // Gemini cannot preserve OpenAI's cache-only mode. Keep search available as a
+                        // compatibility fallback and make the live-search behavior explicit in logs.
+                        this.logger.warn(
+                            "[Adapter] OpenAI web_search requested external_web_access=false, but Gemini " +
+                                "googleSearch has no cache-only mode; enabling live search for compatibility."
+                        );
                     }
                 } else if (tool.type === "code_interpreter") {
                     hasCodeExecution = true;
