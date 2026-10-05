@@ -770,6 +770,22 @@ class FormatConverter {
         // Convert conversation messages
         const conversationMessages = openaiBody.messages.filter(msg => msg.role !== "system");
 
+        // OpenAI tool-result messages identify the function call by `tool_call_id`;
+        // they do not carry the function name. Resolve that name from the preceding
+        // assistant tool call so the Gemini functionCall/functionResponse pair keeps
+        // the same name and id, including for parallel calls.
+        const toolCallIdToName = new Map();
+        for (const message of conversationMessages) {
+            if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) continue;
+            for (const toolCall of message.tool_calls) {
+                const toolCallId = toolCall?.id;
+                const functionName = toolCall?.function?.name;
+                if (typeof toolCallId === "string" && toolCallId && typeof functionName === "string" && functionName) {
+                    toolCallIdToName.set(toolCallId, functionName);
+                }
+            }
+        }
+
         // Buffer for accumulating consecutive tool message parts
         // Gemini requires alternating roles, so consecutive tool messages must be merged
         let pendingToolParts = [];
@@ -852,15 +868,22 @@ class FormatConverter {
                     responseContent = { result: message.content };
                 }
 
-                // Use function name from tool message (OpenAI format always includes name)
-                const functionName = message.name || "unknown_function";
+                const toolCallId =
+                    typeof message.tool_call_id === "string" && message.tool_call_id ? message.tool_call_id : null;
+                const functionName = message.name || (toolCallId ? toolCallIdToName.get(toolCallId) : null);
+                if (!functionName) {
+                    this.logger.warn(
+                        `[Adapter] Unable to resolve function name for OpenAI tool result (tool_call_id: ${toolCallId || "missing"}), using unknown_function`
+                    );
+                }
 
                 // Add to buffer instead of pushing directly
                 // This allows merging consecutive tool messages into one user message
                 // Note: functionResponse does NOT need thoughtSignature per official docs
                 const functionResponsePart = {
                     functionResponse: {
-                        name: functionName,
+                        ...(toolCallId ? { id: toolCallId } : {}),
+                        name: functionName || "unknown_function",
                         response: responseContent,
                     },
                 };
@@ -900,6 +923,7 @@ class FormatConverter {
                         const functionCallPart = {
                             functionCall: {
                                 args,
+                                ...(typeof toolCall.id === "string" && toolCall.id ? { id: toolCall.id } : {}),
                                 name: toolCall.function.name,
                             },
                         };
@@ -1375,7 +1399,10 @@ class FormatConverter {
                 } else if (part.functionCall) {
                     // Convert Gemini functionCall to OpenAI tool_calls format
                     const funcCall = part.functionCall;
-                    const toolCallId = `call_${this._generateRequestId()}`;
+                    const toolCallId =
+                        typeof funcCall.id === "string" && funcCall.id
+                            ? funcCall.id
+                            : `call_${this._generateRequestId()}`;
 
                     // Track tool call index for multiple function calls
                     const toolCallIndex = streamState.toolCallIndex ?? 0;
@@ -2243,7 +2270,10 @@ class FormatConverter {
                 } else if (part.functionCall) {
                     // Convert Gemini functionCall to OpenAI tool_calls format
                     const funcCall = part.functionCall;
-                    const toolCallId = `call_${this._generateRequestId()}`;
+                    const toolCallId =
+                        typeof funcCall.id === "string" && funcCall.id
+                            ? funcCall.id
+                            : `call_${this._generateRequestId()}`;
 
                     const toolCallObj = {
                         function: {
