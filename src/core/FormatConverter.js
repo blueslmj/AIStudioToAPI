@@ -602,8 +602,9 @@ class FormatConverter {
         );
     }
 
-    ensureServerSideToolInvocations(geminiBody, logPrefix = "[Adapter]") {
-        if (!this.hasGeminiBuiltInTools(geminiBody) || !this.hasGeminiFunctionDeclarations(geminiBody)) {
+    ensureServerSideToolInvocations(geminiBody) {
+        const hasMixedTools = this.hasGeminiBuiltInTools(geminiBody) && this.hasGeminiFunctionDeclarations(geminiBody);
+        if (!hasMixedTools && geminiBody?.toolConfig?.includeServerSideToolInvocations !== true) {
             return geminiBody;
         }
 
@@ -615,14 +616,16 @@ class FormatConverter {
             geminiBody.toolConfig = {};
         }
 
-        if (geminiBody.toolConfig.includeServerSideToolInvocations === true) {
-            return geminiBody;
+        if (geminiBody.toolConfig.includeServerSideToolInvocations !== true) {
+            geminiBody.toolConfig.includeServerSideToolInvocations = true;
         }
 
-        geminiBody.toolConfig.includeServerSideToolInvocations = true;
-        this.logger.debug(
-            `${logPrefix} Enabled toolConfig.includeServerSideToolInvocations for built-in tools with functionDeclarations.`
-        );
+        // Tool context circulation does not support AUTO. VALIDATED still allows
+        // both natural language and tool calls; keep explicit NONE/ANY unchanged.
+        const functionCallingConfig = geminiBody.toolConfig.functionCallingConfig;
+        if (functionCallingConfig?.mode === "AUTO") {
+            functionCallingConfig.mode = "VALIDATED";
+        }
 
         return geminiBody;
     }
