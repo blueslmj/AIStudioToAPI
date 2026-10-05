@@ -7,6 +7,7 @@
 
 const axios = require("axios");
 const mime = require("mime-types");
+const { createHash } = require("node:crypto");
 
 /**
  * Format Converter Module
@@ -2926,6 +2927,189 @@ class FormatConverter {
         return `python - <<'${delimiter}'\n${code}${code.endsWith("\n") ? "" : "\n"}${delimiter}`;
     }
 
+    _serializeClaudeServerToolData(value) {
+        return JSON.stringify(value, (key, item) =>
+            ["signature", "thoughtSignature", "thought_signature", "encrypted_content", "encrypted_index"].includes(key)
+                ? undefined
+                : item
+        );
+    }
+
+    _buildClaudeWebToolBlocks(candidate, state, options) {
+        const blocks = [];
+        if (!state.claudeWebToolCalls) state.claudeWebToolCalls = new Map();
+        if (!state.claudeUrlCalls) state.claudeUrlCalls = new Map();
+        if (!state.claudeGroundingSourceKeys) state.claudeGroundingSourceKeys = new Set();
+        if (!state.claudeUrlMetadataKeys) state.claudeUrlMetadataKeys = new Set();
+
+        const createCall = (name, input) => {
+            const call = { id: `srvtoolu_${this._generateRequestId()}`, resultSent: false, seenResults: new Set() };
+            blocks.push({ caller: { type: "direct" }, id: call.id, input, name, type: "server_tool_use" });
+            state.serverToolUsage[name === "web_search" ? "web_search_requests" : "web_fetch_requests"]++;
+            return call;
+        };
+        const ensureSearchCall = (key, queries = []) => {
+            let call = key ? state.claudeWebToolCalls.get(key) : state.claudeLastSearchCall;
+            if (!call) {
+                call = createCall("web_search", { query: queries.join("\n") || "Google Search" });
+                if (key) state.claudeWebToolCalls.set(key, call);
+            }
+            state.claudeLastSearchCall = call;
+            if (!call.queries) call.queries = new Set(queries);
+            else {
+                const fresh = queries.filter(query => !call.queries.has(query));
+                for (const query of fresh) call.queries.add(query);
+            }
+            return call;
+        };
+        const ensureFetchCall = (url, key) => {
+            let calls = key ? state.claudeWebToolCalls.get(key) : null;
+            if (key && !calls) {
+                calls = new Map();
+                state.claudeWebToolCalls.set(key, calls);
+            }
+            let call = calls?.get(url);
+            const existing = state.claudeUrlCalls.get(url);
+            if (!call && existing && !key) call = existing;
+            if (!call) call = createCall("web_fetch", { url });
+            if (key) {
+                calls.set(url, call);
+            }
+            state.claudeUrlCalls.set(url, call);
+            return call;
+        };
+        const searchResults = () => {
+            const chunks = candidate?.groundingMetadata?.groundingChunks;
+            return (Array.isArray(chunks) ? chunks : []).flatMap(chunk => {
+                const web = chunk?.web;
+                if (typeof web?.uri !== "string" || !web.uri) return [];
+                return [
+                    {
+                        encrypted_content: "",
+                        page_age: null,
+                        title: web.title || web.siteName || web.uri,
+                        type: "web_search_result",
+                        url: web.uri,
+                    },
+                ];
+            });
+        };
+        const emitSearchResults = (call, results) => {
+            const fresh = results.filter(result => {
+                const key = `${result.url}\u0000${result.title}`;
+                if (call.seenResults.has(key)) return false;
+                call.seenResults.add(key);
+                state.claudeGroundingSourceKeys.add(key);
+                return true;
+            });
+            if (!call.resultSent) {
+                blocks.push({ content: fresh, tool_use_id: call.id, type: "web_search_tool_result" });
+                call.resultSent = true;
+            }
+        };
+        const emitFetchResult = (metadata, key) => {
+            const url = metadata?.retrievedUrl || metadata?.retrieved_url;
+            if (typeof url !== "string" || !url) return;
+            const status = String(metadata.urlRetrievalStatus || metadata.url_retrieval_status || "");
+            const resultKey = `${url}:${status}`;
+            // Candidate metadata has no call ID and can repeat a previous result
+            // while a new call is outstanding. Do not complete that new call twice.
+            if (!key && state.claudeUrlMetadataKeys.has(resultKey)) return;
+            let call = key ? state.claudeWebToolCalls.get(key)?.get(url) : null;
+            // A redirected URL still belongs to the outstanding call in this response.
+            if (!call && key) {
+                call = [...(state.claudeWebToolCalls.get(key)?.values() || [])].find(item => !item.resultSent);
+            }
+            if (!call) call = ensureFetchCall(url, key);
+            state.claudeUrlCalls.set(url, call);
+            if (key) state.claudeWebToolCalls.get(key)?.set(url, call);
+            if (call.seenResults.has(resultKey)) return;
+            call.seenResults.add(resultKey);
+            state.claudeUrlMetadataKeys.add(resultKey);
+            if (!status || call.resultSent) return;
+            const content = status.includes("SUCCESS")
+                ? {
+                      content: {
+                          citations: null,
+                          source: { data: "", media_type: "text/plain", type: "text" },
+                          title: null,
+                          type: "document",
+                      },
+                      retrieved_at: new Date().toISOString(),
+                      type: "web_fetch_result",
+                      url,
+                  }
+                : {
+                      error_code: status.includes("UNSAFE") ? "url_not_allowed" : "url_not_accessible",
+                      type: "web_fetch_tool_result_error",
+                  };
+            blocks.push({ caller: { type: "direct" }, content, tool_use_id: call.id, type: "web_fetch_tool_result" });
+            call.resultSent = true;
+        };
+
+        if (options.includeNative !== false) {
+            const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+            for (const part of parts) {
+                const invocation = part?.toolCall || part?.toolResponse;
+                if (!invocation) continue;
+                const type = invocation.toolType;
+                const identity =
+                    invocation.id ||
+                    createHash("sha256").update(this._serializeClaudeServerToolData(invocation)).digest("hex");
+                const key = `${type}:${identity}`;
+                if (type === "GOOGLE_SEARCH_WEB") {
+                    const queries = this._normalizeWebSearchQueries(invocation.args?.queries || invocation.args?.query);
+                    const call = ensureSearchCall(key, queries);
+                    if (part.toolResponse) {
+                        emitSearchResults(call, searchResults());
+                    }
+                } else if (type === "URL_CONTEXT") {
+                    if (part.toolCall) {
+                        const urls = invocation.args?.urls;
+                        const validUrls = (Array.isArray(urls) ? urls : typeof urls === "string" ? [urls] : []).filter(
+                            url => typeof url === "string" && url
+                        );
+                        for (const url of validUrls) ensureFetchCall(url, key);
+                    } else {
+                        const response = invocation.response || {};
+                        const metadata =
+                            response.url_metadata ||
+                            response.urlMetadata ||
+                            response.urls_metadata ||
+                            response.urlsMetadata ||
+                            [];
+                        for (const entry of Array.isArray(metadata) ? metadata : []) emitFetchResult(entry, key);
+                    }
+                }
+            }
+        }
+
+        if (options.includeMetadata !== false) {
+            const grounding = candidate?.groundingMetadata;
+            const context = candidate?.urlContextMetadata || candidate?.url_context_metadata;
+            const knownQueries = new Set([
+                ...[...state.claudeWebToolCalls.values()].flatMap(call => [...(call.queries || [])]),
+            ]);
+            const searchQueries = this._normalizeWebSearchQueries(grounding?.webSearchQueries);
+            const queries = searchQueries.filter(query => !knownQueries.has(query));
+            const results = searchResults().filter(
+                result => !state.claudeGroundingSourceKeys.has(`${result.url}\u0000${result.title}`)
+            );
+            // URL Context also emits grounding sources. Those sources alone
+            // do not represent an additional Google Search invocation.
+            const hasSearch = searchQueries.length > 0 || state.claudeLastSearchCall;
+            const hasFetch = context || state.claudeUrlCalls.size > 0;
+            if ((queries.length > 0 || results.length > 0) && (hasSearch || !hasFetch)) {
+                const call = ensureSearchCall(null, queries);
+                emitSearchResults(call, results);
+            }
+            const metadata = context?.urlMetadata || context?.url_metadata || [];
+            for (const entry of Array.isArray(metadata) ? metadata : []) emitFetchResult(entry);
+        }
+
+        return blocks;
+    }
+
     _buildClaudeServerToolBlocks(candidate, state = {}, options = {}) {
         const includeCodeExecution = options.includeCodeExecution !== false;
         const includeMetadata = options.includeMetadata !== false;
@@ -2943,116 +3127,12 @@ class FormatConverter {
 
         const createToolUseId = () => `srvtoolu_${this._generateRequestId()}`;
 
-        if (includeMetadata) {
-            const groundingMetadata = candidate?.groundingMetadata;
-            const queries = this._normalizeWebSearchQueries(groundingMetadata?.webSearchQueries);
-            const groundingChunks = Array.isArray(groundingMetadata?.groundingChunks)
-                ? groundingMetadata.groundingChunks
-                : [];
-            const webResults = [];
-            const webResultKeys = new Set();
-
-            for (const chunk of groundingChunks) {
-                const web = chunk?.web;
-                if (!web || typeof web.uri !== "string" || !web.uri) continue;
-                const key = `${web.uri}\u0000${web.title || web.siteName || ""}`;
-                if (webResultKeys.has(key)) continue;
-                webResultKeys.add(key);
-                webResults.push({
-                    // Gemini grounding does not expose Anthropic's opaque replay payload.
-                    encrypted_content: "",
-                    page_age: null,
-                    title: web.title || web.siteName || web.uri,
-                    type: "web_search_result",
-                    url: web.uri,
-                });
-            }
-
-            if (queries.length > 0 || webResults.length > 0) {
-                const searchKey = `web_search:${JSON.stringify({ queries, webResults })}`;
-                if (!state.serverToolSeenKeys.has(searchKey)) {
-                    state.serverToolSeenKeys.add(searchKey);
-                    const toolUseId = createToolUseId();
-                    blocks.push({
-                        caller: { type: "direct" },
-                        id: toolUseId,
-                        input: { query: queries.join("\n") || "Google Search" },
-                        name: "web_search",
-                        type: "server_tool_use",
-                    });
-                    blocks.push({
-                        caller: { type: "direct" },
-                        content: webResults,
-                        tool_use_id: toolUseId,
-                        type: "web_search_tool_result",
-                    });
-                    // One synthetic server_tool_use block represents the complete
-                    // Gemini grounding operation, even when Gemini reports several queries.
-                    state.serverToolUsage.web_search_requests++;
-                }
-            }
-
-            const urlContextMetadata = candidate?.urlContextMetadata || candidate?.url_context_metadata;
-            const urlMetadata = Array.isArray(urlContextMetadata?.urlMetadata)
-                ? urlContextMetadata.urlMetadata
-                : Array.isArray(urlContextMetadata?.url_metadata)
-                  ? urlContextMetadata.url_metadata
-                  : [];
-
-            for (const metadata of urlMetadata) {
-                const url = metadata?.retrievedUrl || metadata?.retrieved_url;
-                if (typeof url !== "string" || !url) continue;
-                const status = String(metadata?.urlRetrievalStatus || metadata?.url_retrieval_status || "");
-                const fetchKey = `web_fetch:${url}:${status}`;
-                if (state.serverToolSeenKeys.has(fetchKey)) continue;
-                state.serverToolSeenKeys.add(fetchKey);
-
-                const toolUseId = createToolUseId();
-                blocks.push({
-                    caller: { type: "direct" },
-                    id: toolUseId,
-                    input: { url },
-                    name: "web_fetch",
-                    type: "server_tool_use",
-                });
-
-                if (status.includes("SUCCESS")) {
-                    blocks.push({
-                        caller: { type: "direct" },
-                        content: {
-                            content: {
-                                citations: null,
-                                source: {
-                                    // URL Context exposes retrieval status and URL, but not
-                                    // the fetched document body returned to the model.
-                                    data: "",
-                                    media_type: "text/plain",
-                                    type: "text",
-                                },
-                                title: null,
-                                type: "document",
-                            },
-                            retrieved_at: new Date().toISOString(),
-                            type: "web_fetch_result",
-                            url,
-                        },
-                        tool_use_id: toolUseId,
-                        type: "web_fetch_tool_result",
-                    });
-                } else {
-                    blocks.push({
-                        caller: { type: "direct" },
-                        content: {
-                            error_code: status.includes("UNSAFE") ? "url_not_allowed" : "url_not_accessible",
-                            type: "web_fetch_tool_result_error",
-                        },
-                        tool_use_id: toolUseId,
-                        type: "web_fetch_tool_result",
-                    });
-                }
-                state.serverToolUsage.web_fetch_requests++;
-            }
-        }
+        blocks.push(
+            ...this._buildClaudeWebToolBlocks(candidate, state, {
+                includeMetadata,
+                includeNative: options.includeNative,
+            })
+        );
 
         if (includeCodeExecution) {
             const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
@@ -3405,11 +3485,7 @@ class FormatConverter {
         ]);
 
         const convertClaudeServerToolBlock = block => ({
-            text: `[Claude server tool history: ${block.type}]\n${JSON.stringify(
-                block,
-                (key, value) => (key === "encrypted_content" ? undefined : value),
-                2
-            )}`,
+            text: `[Claude server tool history: ${block.type}]\n${this._serializeClaudeServerToolData(block)}`,
         });
 
         // Convert Claude messages to Google format
@@ -4024,10 +4100,15 @@ class FormatConverter {
             streamState.messageStartSent = true;
         }
 
-        // Gemini may split grounding and URL metadata across streaming chunks.
-        // Accumulate it so one Gemini operation becomes one complete Claude pair.
+        // Preserve the existing metadata aggregation; only native tool parts
+        // are converted as they arrive.
         const accumulatedServerToolMetadata = this._accumulateClaudeServerToolMetadata(candidate, streamState);
         const candidateParts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+        // Grounding metadata describes the candidate as a whole, without call IDs.
+        // Attach it only to the last search response, as with the metadata fallback.
+        const lastSearchResponsePart = [...candidateParts]
+            .reverse()
+            .find(part => part?.toolResponse?.toolType === "GOOGLE_SEARCH_WEB");
 
         // Process content parts
         if (candidateParts.length > 0) {
@@ -4080,10 +4161,18 @@ class FormatConverter {
                         type: "content_block_delta",
                     });
                     this.logger.info("[Adapter] Successfully parsed image from streaming response chunk.");
-                } else if (part.executableCode || part.codeExecutionResult) {
-                    const serverTools = this._buildClaudeServerToolBlocks({ content: { parts: [part] } }, streamState, {
-                        includeMetadata: false,
-                    });
+                } else if (part.toolCall || part.toolResponse || part.executableCode || part.codeExecutionResult) {
+                    const serverTools = this._buildClaudeServerToolBlocks(
+                        {
+                            content: { parts: [part] },
+                            groundingMetadata:
+                                candidate.finishReason && part === lastSearchResponsePart
+                                    ? accumulatedServerToolMetadata.groundingMetadata
+                                    : undefined,
+                        },
+                        streamState,
+                        { includeMetadata: false }
+                    );
                     emitServerToolBlocks(serverTools.blocks);
                 } else if (part.functionCall) {
                     // Tool use
@@ -4125,6 +4214,7 @@ class FormatConverter {
 
             const metadataServerTools = this._buildClaudeServerToolBlocks(accumulatedServerToolMetadata, streamState, {
                 includeCodeExecution: false,
+                includeNative: false,
             });
             emitServerToolBlocks(metadataServerTools.blocks);
         }
@@ -4210,12 +4300,11 @@ class FormatConverter {
 
         let hasToolUse = false;
         const serverToolState = {};
-        const metadataServerTools = this._buildClaudeServerToolBlocks(candidate, serverToolState, {
-            includeCodeExecution: false,
-        });
-        content.push(...metadataServerTools.blocks);
 
         if (candidate.content && Array.isArray(candidate.content.parts)) {
+            const lastSearchResponsePart = [...candidate.content.parts]
+                .reverse()
+                .find(part => part?.toolResponse?.toolType === "GOOGLE_SEARCH_WEB");
             for (const part of candidate.content.parts) {
                 if (part.thought === true && part.text) {
                     content.push({
@@ -4234,9 +4323,13 @@ class FormatConverter {
                         text: `![Generated Image](data:${part.inlineData.mimeType};base64,${part.inlineData.data})`,
                         type: "text",
                     });
-                } else if (part.executableCode || part.codeExecutionResult) {
+                } else if (part.toolCall || part.toolResponse || part.executableCode || part.codeExecutionResult) {
                     const serverTools = this._buildClaudeServerToolBlocks(
-                        { content: { parts: [part] } },
+                        {
+                            content: { parts: [part] },
+                            groundingMetadata:
+                                part === lastSearchResponsePart ? candidate.groundingMetadata : undefined,
+                        },
                         serverToolState,
                         { includeMetadata: false }
                     );
@@ -4253,6 +4346,12 @@ class FormatConverter {
                 }
             }
         }
+
+        const metadataServerTools = this._buildClaudeServerToolBlocks(candidate, serverToolState, {
+            includeCodeExecution: false,
+            includeNative: false,
+        });
+        content.push(...metadataServerTools.blocks);
 
         const webSearchCitations = this._buildClaudeWebSearchCitations(candidate);
         if (webSearchCitations.length > 0) {
