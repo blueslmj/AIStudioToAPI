@@ -906,6 +906,11 @@ class FormatConverter {
                     responseContent = { result: message.content };
                 }
 
+                // Gemini requires an object even when valid JSON parses to a primitive or null.
+                if (responseContent === null || typeof responseContent !== "object" || Array.isArray(responseContent)) {
+                    responseContent = { result: responseContent };
+                }
+
                 const toolCallId =
                     typeof message.tool_call_id === "string" && message.tool_call_id ? message.tool_call_id : null;
                 const functionName = message.name || (toolCallId ? toolCallIdToName.get(toolCallId) : null);
