@@ -1308,6 +1308,37 @@ class FormatConverter {
                 functionCallingConfig.mode = "NONE";
             } else if (toolChoice === "required" && hasFunctionDeclarations) {
                 functionCallingConfig.mode = "ANY";
+            } else if (typeof toolChoice === "object" && toolChoice.type === "allowed_tools") {
+                // Chat nests the mode/selectors under allowed_tools; Responses uses a flat shape.
+                const allowedTools = toolChoice.allowed_tools;
+                if (!allowedTools || !["auto", "required"].includes(allowedTools.mode)) {
+                    throw new Error("Chat allowed_tools requires an auto or required mode.");
+                }
+                if (!Array.isArray(allowedTools.tools)) {
+                    throw new Error("Chat allowed_tools requires a tools array.");
+                }
+                const declaredNames = new Set(
+                    (googleRequest.tools || []).flatMap(tool =>
+                        (tool.functionDeclarations || []).map(declaration => declaration.name)
+                    )
+                );
+                const allowedNames = [];
+                for (const selector of allowedTools.tools) {
+                    const name = selector?.type === "function" ? selector.function?.name : undefined;
+                    if (typeof name !== "string" || !declaredNames.has(name)) {
+                        throw new Error("Chat allowed_tools must select declared function tools.");
+                    }
+                    if (!allowedNames.includes(name)) allowedNames.push(name);
+                }
+                if (allowedNames.length === 0) {
+                    if (allowedTools.mode === "required") {
+                        throw new Error("Chat allowed_tools required mode needs at least one function.");
+                    }
+                    functionCallingConfig.mode = "NONE";
+                } else {
+                    functionCallingConfig.mode = allowedTools.mode === "required" ? "ANY" : "VALIDATED";
+                    functionCallingConfig.allowedFunctionNames = allowedNames;
+                }
             } else if (typeof toolChoice === "object" && hasFunctionDeclarations) {
                 // Handle { type: "function", function: { name: "xxx" } }
                 // or legacy { name: "xxx" }
