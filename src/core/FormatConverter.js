@@ -3085,9 +3085,14 @@ class FormatConverter {
         ];
     }
 
+    _extractUrlContextMetadataEntries(metadata) {
+        const entries =
+            metadata?.urlMetadata || metadata?.url_metadata || metadata?.urlsMetadata || metadata?.urls_metadata || [];
+        return Array.isArray(entries) ? entries : [];
+    }
+
     _extractResponseUrlContextUrls(metadata) {
-        const entries = metadata?.urlMetadata || metadata?.url_metadata || [];
-        return entries
+        return this._extractUrlContextMetadataEntries(metadata)
             .map(entry => entry?.retrievedUrl || entry?.retrieved_url)
             .filter(url => typeof url === "string" && url);
     }
@@ -3415,13 +3420,9 @@ class FormatConverter {
                         for (const url of validUrls) ensureFetchCall(url, key);
                     } else {
                         const response = invocation.response || {};
-                        const metadata =
-                            response.url_metadata ||
-                            response.urlMetadata ||
-                            response.urls_metadata ||
-                            response.urlsMetadata ||
-                            [];
-                        for (const entry of Array.isArray(metadata) ? metadata : []) emitFetchResult(entry, key);
+                        for (const entry of this._extractUrlContextMetadataEntries(response)) {
+                            emitFetchResult(entry, key);
+                        }
                     }
                 }
             }
@@ -3441,7 +3442,7 @@ class FormatConverter {
             // URL Context also emits grounding sources. Those sources alone
             // do not represent an additional Google Search invocation.
             const hasSearch = searchQueries.length > 0 || state.claudeLastSearchCall;
-            const metadata = context?.urlMetadata || context?.url_metadata || [];
+            const metadata = this._extractUrlContextMetadataEntries(context);
             // Streaming accumulation includes an empty URL Context object even
             // when no fetch occurred. Only actual retrievals indicate a fetch.
             const hasFetch = (Array.isArray(metadata) && metadata.length > 0) || state.claudeUrlCalls.size > 0;
@@ -3621,11 +3622,7 @@ class FormatConverter {
         }
 
         const urlContextMetadata = candidate?.urlContextMetadata || candidate?.url_context_metadata;
-        const urlMetadata = Array.isArray(urlContextMetadata?.urlMetadata)
-            ? urlContextMetadata.urlMetadata
-            : Array.isArray(urlContextMetadata?.url_metadata)
-              ? urlContextMetadata.url_metadata
-              : [];
+        const urlMetadata = this._extractUrlContextMetadataEntries(urlContextMetadata);
         for (const metadata of urlMetadata) {
             const url = metadata?.retrievedUrl || metadata?.retrieved_url;
             if (typeof url === "string" && url) accumulated.urlMetadata.set(url, metadata);
@@ -5098,6 +5095,33 @@ class FormatConverter {
                     });
                 } else if (item && typeof item === "object") {
                     if (item.type === "additional_tools" || item.role === "system" || item.role === "developer") {
+                        continue;
+                    }
+                    if (item.type === "code_interpreter_call") {
+                        if (pendingFunctionResponseParts.length > 0) {
+                            flushToolTurns();
+                        }
+                        // Replay executed code in the model turn alongside any function calls.
+                        // Responses container/item IDs do not identify native Gemini executions.
+                        if (typeof item.code === "string" && item.code) {
+                            pendingFunctionCallParts.push({
+                                executableCode: { code: item.code, language: "PYTHON" },
+                            });
+                        }
+                        if (item.status === "completed" || item.status === "failed") {
+                            const logs = Array.isArray(item.outputs)
+                                ? item.outputs
+                                      .filter(output => output?.type === "logs" && typeof output.logs === "string")
+                                      .map(output => output.logs)
+                                      .join("")
+                                : "";
+                            pendingFunctionCallParts.push({
+                                codeExecutionResult: {
+                                    outcome: item.status === "completed" ? "OUTCOME_OK" : "OUTCOME_FAILED",
+                                    output: logs,
+                                },
+                            });
+                        }
                         continue;
                     }
                     if (item.type === "reasoning") {
