@@ -3121,7 +3121,10 @@ class FormatConverter {
             // URL Context also emits grounding sources. Those sources alone
             // do not represent an additional Google Search invocation.
             const hasSearch = searchQueries.length > 0 || state.claudeLastSearchCall;
-            const hasFetch = context || state.claudeUrlCalls.size > 0;
+            const metadata = context?.urlMetadata || context?.url_metadata || [];
+            // Streaming accumulation includes an empty URL Context object even
+            // when no fetch occurred. Only actual retrievals indicate a fetch.
+            const hasFetch = (Array.isArray(metadata) && metadata.length > 0) || state.claudeUrlCalls.size > 0;
             if ((queries.length > 0 || results.length > 0) && (hasSearch || !hasFetch)) {
                 const call = state.claudeLastSearchResultCall || ensureSearchCall(null, queries);
                 emitSearchResults(call, results);
@@ -3129,7 +3132,6 @@ class FormatConverter {
             for (const call of state.claudeWebToolCalls.values()) {
                 if (call.responseReceived && !call.resultSent) emitSearchResults(call, []);
             }
-            const metadata = context?.urlMetadata || context?.url_metadata || [];
             for (const entry of Array.isArray(metadata) ? metadata : []) emitFetchResult(entry);
         }
 
