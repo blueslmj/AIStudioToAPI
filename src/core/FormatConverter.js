@@ -4155,6 +4155,39 @@ class FormatConverter {
             }
         };
 
+        const serializeResponseTextPart = contentPart => {
+            const text = typeof contentPart?.text === "string" ? contentPart.text : "";
+            if (contentPart?.type !== "output_text" || !Array.isArray(contentPart.annotations)) {
+                return text;
+            }
+
+            // Gemini request content has no equivalent to Responses API output_text
+            // annotations. Preserve URL citations in the replayed assistant history as
+            // text so stateless follow-up requests can still reason about their sources.
+            const seenCitationUrls = new Set();
+            const citations = [];
+            for (const annotation of contentPart.annotations) {
+                if (
+                    annotation?.type !== "url_citation" ||
+                    typeof annotation.url !== "string" ||
+                    !annotation.url ||
+                    seenCitationUrls.has(annotation.url)
+                ) {
+                    continue;
+                }
+                seenCitationUrls.add(annotation.url);
+                citations.push({
+                    ...(typeof annotation.title === "string" && annotation.title ? { title: annotation.title } : {}),
+                    url: annotation.url,
+                });
+            }
+
+            if (citations.length === 0) return text;
+            return `${text}\n\n[Source citations from the prior assistant response]\n${citations
+                .map(citation => `- ${citation.title ? `${citation.title}: ` : ""}${citation.url}`)
+                .join("\n")}`;
+        };
+
         const extractTextContent = content => {
             if (typeof content === "string") return content;
             if (!Array.isArray(content)) return "";
@@ -4165,7 +4198,7 @@ class FormatConverter {
                         typeof c === "object" &&
                         (c.type === "text" || c.type === "input_text" || c.type === "output_text")
                 )
-                .map(c => c.text)
+                .map(serializeResponseTextPart)
                 .filter(Boolean)
                 .join("\n");
         };
@@ -4417,7 +4450,7 @@ class FormatConverter {
                                     contentPart.type === "input_text" ||
                                     contentPart.type === "output_text"
                                 ) {
-                                    googleParts.push({ text: contentPart.text });
+                                    googleParts.push({ text: serializeResponseTextPart(contentPart) });
                                 } else if (contentPart.type === "image_url" || contentPart.type === "input_image") {
                                     const imageUrl = this.normalizeImageUrl(contentPart.image_url);
                                     if (!imageUrl) {
