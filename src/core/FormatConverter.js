@@ -4573,6 +4573,28 @@ class FormatConverter {
                     if (item.type === "additional_tools" || item.role === "system" || item.role === "developer") {
                         continue;
                     }
+                    if (item.type === "reasoning") {
+                        const summary = Array.isArray(item.summary)
+                            ? item.summary
+                                  .filter(
+                                      part =>
+                                          part?.type === "summary_text" &&
+                                          typeof part.text === "string" &&
+                                          part.text.length > 0
+                                  )
+                                  .map(part => part.text)
+                                  .join("\n")
+                            : "";
+                        if (summary) {
+                            if (pendingFunctionResponseParts.length > 0) {
+                                flushToolTurns();
+                            }
+                            pendingFunctionCallParts.push({
+                                text: `[Previous assistant reasoning summary]\n${summary}`,
+                            });
+                        }
+                        continue;
+                    }
                     // Handle different message types in Response API
                     if (item.type === "function_call" || item.type === "custom_tool_call") {
                         // Function call from model (assistant message with tool call).
@@ -4594,7 +4616,7 @@ class FormatConverter {
                                 name: toGeminiFunctionName(item.name, item.namespace),
                             },
                         };
-                        if (pendingFunctionCallParts.length === 0) {
+                        if (!pendingFunctionCallParts.some(part => part.functionCall)) {
                             functionCallPart.thoughtSignature = FormatConverter.DUMMY_THOUGHT_SIGNATURE;
                         }
                         if (typeof item.call_id === "string" && item.call_id) {
