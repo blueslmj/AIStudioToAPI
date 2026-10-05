@@ -942,6 +942,14 @@ class FormatConverter {
         // Gemini requires alternating roles, so consecutive tool messages must be merged
         let pendingToolParts = [];
 
+        let pendingModelParts = [];
+        const flushModelParts = () => {
+            if (pendingModelParts.length > 0) {
+                googleContents.push({ parts: pendingModelParts, role: "model" });
+                pendingModelParts = [];
+            }
+        };
+
         // Helper function to flush pending tool parts as a single user message
         // Note: functionResponse does NOT need thoughtSignature per official docs
         const flushToolParts = () => {
@@ -957,6 +965,7 @@ class FormatConverter {
         for (let msgIndex = 0; msgIndex < conversationMessages.length; msgIndex++) {
             const message = conversationMessages[msgIndex];
             const googleParts = [];
+            if (message.role !== "assistant") flushModelParts();
 
             // Handle tool role (function execution result)
             if (message.role === "tool") {
@@ -1165,14 +1174,16 @@ class FormatConverter {
             }
 
             if (googleParts.length > 0) {
-                googleContents.push({
-                    parts: googleParts,
-                    role: message.role === "assistant" ? "model" : "user",
-                });
+                if (message.role === "assistant") {
+                    pendingModelParts.push(...googleParts);
+                } else {
+                    googleContents.push({ parts: googleParts, role: "user" });
+                }
             }
         }
 
         // Flush any remaining tool parts after the loop
+        flushModelParts();
         flushToolParts();
 
         // Build Google request
@@ -3753,6 +3764,14 @@ class FormatConverter {
         // Buffer for accumulating consecutive tool result parts
         let pendingToolParts = [];
 
+        let pendingModelParts = [];
+        const flushModelParts = () => {
+            if (pendingModelParts.length > 0) {
+                googleContents.push({ parts: pendingModelParts, role: "model" });
+                pendingModelParts = [];
+            }
+        };
+
         const flushToolParts = () => {
             if (pendingToolParts.length > 0) {
                 googleContents.push({
@@ -3836,6 +3855,7 @@ class FormatConverter {
         // Convert Claude messages to Google format
         for (const message of claudeBody.messages) {
             if (message.role === "system") continue;
+            if (message.role !== "assistant") flushModelParts();
 
             const googleParts = [];
 
@@ -3976,14 +3996,16 @@ class FormatConverter {
             }
 
             if (googleParts.length > 0) {
-                googleContents.push({
-                    parts: googleParts,
-                    role: message.role === "assistant" ? "model" : "user",
-                });
+                if (message.role === "assistant") {
+                    pendingModelParts.push(...googleParts);
+                } else {
+                    googleContents.push({ parts: googleParts, role: "user" });
+                }
             }
         }
 
         // Flush remaining tool parts
+        flushModelParts();
         flushToolParts();
 
         // Build Google request
@@ -5064,17 +5086,17 @@ class FormatConverter {
                 }
             }
 
-            // Pending tool parts: consecutive function_call items accumulate into one model
-            // turn; the function_call_output items answering them accumulate into one user turn.
-            let pendingFunctionCallParts = [];
+            // Keep assistant messages, reasoning and tool calls in the same model turn.
+            // The function_call_output items answering them form the following user turn.
+            let pendingModelParts = [];
             let pendingFunctionResponseParts = [];
             const flushToolTurns = () => {
-                if (pendingFunctionCallParts.length > 0) {
+                if (pendingModelParts.length > 0) {
                     googleContents.push({
-                        parts: pendingFunctionCallParts,
+                        parts: pendingModelParts,
                         role: "model",
                     });
-                    pendingFunctionCallParts = [];
+                    pendingModelParts = [];
                 }
                 if (pendingFunctionResponseParts.length > 0) {
                     googleContents.push({
@@ -5104,7 +5126,7 @@ class FormatConverter {
                         // Replay executed code in the model turn alongside any function calls.
                         // Responses container/item IDs do not identify native Gemini executions.
                         if (typeof item.code === "string" && item.code) {
-                            pendingFunctionCallParts.push({
+                            pendingModelParts.push({
                                 executableCode: { code: item.code, language: "PYTHON" },
                             });
                         }
@@ -5115,7 +5137,7 @@ class FormatConverter {
                                       .map(output => output.logs)
                                       .join("")
                                 : "";
-                            pendingFunctionCallParts.push({
+                            pendingModelParts.push({
                                 codeExecutionResult: {
                                     outcome: item.status === "completed" ? "OUTCOME_OK" : "OUTCOME_FAILED",
                                     output: logs,
@@ -5140,7 +5162,7 @@ class FormatConverter {
                             if (pendingFunctionResponseParts.length > 0) {
                                 flushToolTurns();
                             }
-                            pendingFunctionCallParts.push({
+                            pendingModelParts.push({
                                 text: `[Previous assistant reasoning summary]\n${summary}`,
                             });
                         }
@@ -5167,26 +5189,26 @@ class FormatConverter {
                                 name: toGeminiFunctionName(item.name, item.namespace),
                             },
                         };
-                        if (!pendingFunctionCallParts.some(part => part.functionCall)) {
+                        if (!pendingModelParts.some(part => part.functionCall)) {
                             functionCallPart.thoughtSignature = FormatConverter.DUMMY_THOUGHT_SIGNATURE;
                         }
                         if (typeof item.call_id === "string" && item.call_id) {
                             functionCallPart.functionCall.id = item.call_id;
                         }
-                        pendingFunctionCallParts.push(functionCallPart);
+                        pendingModelParts.push(functionCallPart);
                         this.logger.debug(
                             `[Adapter] Converted Response API function_call to Gemini functionCall: ${item.name}`
                         );
                     } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
                         // Function output (tool result from user). Responses must live in the
                         // user turn directly following the model turn with the calls, so close
-                        // the pending functionCall turn first and keep accumulating outputs.
-                        if (pendingFunctionCallParts.length > 0) {
+                        // the pending model turn first and keep accumulating outputs.
+                        if (pendingModelParts.length > 0) {
                             googleContents.push({
-                                parts: pendingFunctionCallParts,
+                                parts: pendingModelParts,
                                 role: "model",
                             });
-                            pendingFunctionCallParts = [];
+                            pendingModelParts = [];
                         }
                         const responseMeta = functionResponseMetaByItem.get(item) || {
                             id: undefined,
@@ -5207,9 +5229,8 @@ class FormatConverter {
                             `[Adapter] Converted Response API function_call_output to Gemini functionResponse: ${responseMeta.name}`
                         );
                     } else {
-                        // Regular message object with role and content.
-                        // Plain content separates tool rounds, so flush pending tool turns.
-                        flushToolTurns();
+                        // Regular assistant messages belong to the same model turn as
+                        // adjacent calls. User messages end the pending tool round.
                         const googleParts = [];
 
                         if (typeof item.content === "string") {
@@ -5288,10 +5309,18 @@ class FormatConverter {
                         }
 
                         if (googleParts.length > 0) {
-                            googleContents.push({
-                                parts: googleParts,
-                                role: item.role === "assistant" ? "model" : "user",
-                            });
+                            if (item.role === "assistant") {
+                                if (pendingFunctionResponseParts.length > 0) {
+                                    flushToolTurns();
+                                }
+                                pendingModelParts.push(...googleParts);
+                            } else {
+                                flushToolTurns();
+                                googleContents.push({
+                                    parts: googleParts,
+                                    role: "user",
+                                });
+                            }
                         }
                     }
                 }
