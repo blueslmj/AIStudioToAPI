@@ -245,8 +245,8 @@ class FormatConverter {
      */
     _flattenResponseFunctionTools(tools) {
         const functionDeclarations = [];
-        const functionNameMap = {};
-        const namespaceAliasMap = {};
+        const functionNameMap = Object.create(null);
+        const namespaceAliasMap = Object.create(null);
         const usedNames = new Set();
         let namespaceFunctionCount = 0;
 
@@ -331,6 +331,13 @@ class FormatConverter {
         }
 
         return { functionDeclarations, functionNameMap, namespaceAliasMap, namespaceFunctionCount };
+    }
+
+    _resolveResponseFunctionIdentity(name, functionNameMap) {
+        if (functionNameMap && Object.prototype.hasOwnProperty.call(functionNameMap, name)) {
+            return functionNameMap[name] || { name };
+        }
+        return { name };
     }
 
     /**
@@ -2069,9 +2076,10 @@ class FormatConverter {
                         }
                     } else if (part?.functionCall) {
                         const funcCall = part.functionCall;
-                        const responseFunctionIdentity = streamState.responseFunctionNameMap?.[funcCall.name] || {
-                            name: funcCall.name,
-                        };
+                        const responseFunctionIdentity = this._resolveResponseFunctionIdentity(
+                            funcCall.name,
+                            streamState.responseFunctionNameMap
+                        );
                         const isCustom = responseFunctionIdentity.type === "custom";
                         const itemId = `${isCustom ? "ctc" : "fc"}_${this._generateRequestId()}`;
                         // Pass the Gemini-issued function call id through as the Responses API
@@ -2473,9 +2481,10 @@ class FormatConverter {
                 } else if (part.functionCall) {
                     // Function call
                     const funcCall = part.functionCall;
-                    const responseFunctionIdentity = responseFunctionNameMap?.[funcCall.name] || {
-                        name: funcCall.name,
-                    };
+                    const responseFunctionIdentity = this._resolveResponseFunctionIdentity(
+                        funcCall.name,
+                        responseFunctionNameMap
+                    );
                     const isCustom = responseFunctionIdentity.type === "custom";
                     const toolInput = isCustom ? funcCall.args?.input : JSON.stringify(funcCall.args || {});
                     if (typeof toolInput !== "string") {
@@ -4301,8 +4310,8 @@ class FormatConverter {
             }
 
             const extension = mime.extension(mimeType);
-            const displayName =
-                contentPart.filename || `function-output-${itemIndex + 1}${extension ? `.${extension}` : ""}`;
+            // Reference names are unique by output position; preserve original filenames in response.output.
+            const displayName = `function-output-${itemIndex + 1}${extension ? `.${extension}` : ""}`;
             return {
                 displayName,
                 part: {
@@ -4464,7 +4473,7 @@ class FormatConverter {
             // - Adjacent function_call items are merged into ONE model turn, and the
             //   function_call_output items answering them are merged into ONE user turn,
             //   matching Gemini's convention for parallel function calling.
-            const callIdToName = {};
+            const callIdToName = Object.create(null);
             const toolCallsInOrder = [];
             const toolCallsAnsweredByCallId = new Set();
             const functionResponseMetaByItem = new Map();
