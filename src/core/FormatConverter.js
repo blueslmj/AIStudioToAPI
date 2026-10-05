@@ -201,6 +201,109 @@ class FormatConverter {
         return null;
     }
 
+    // Shared media loading for Responses outputs and Claude images/documents.
+    async _loadFunctionResponseMedia(contentPart, itemIndex, { functionResponse = true } = {}) {
+        const supportedMimeTypes = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain"]);
+        const isImage = contentPart?.type === "input_image" || contentPart?.type === "image";
+        const claudeSource = ["image", "document"].includes(contentPart?.type) ? contentPart.source : null;
+        const source = claudeSource
+            ? claudeSource.url
+            : isImage
+              ? this.normalizeImageUrl(contentPart.image_url)
+              : contentPart?.file_data || contentPart?.file_url;
+
+        let data;
+        let mimeType;
+        if (claudeSource?.type === "base64" || claudeSource?.type === "text") {
+            if (typeof claudeSource.data !== "string" || !claudeSource.data) {
+                this.logger.warn("[Adapter] Skipping Claude media with no data.");
+                return null;
+            }
+            data =
+                claudeSource.type === "text"
+                    ? Buffer.from(claudeSource.data, "utf8").toString("base64")
+                    : claudeSource.data;
+            mimeType = claudeSource.media_type;
+        } else if (typeof source !== "string" || !source) {
+            this.logger.warn(
+                `[Adapter] Skipping ${contentPart?.type || "unknown"} media because it has no supported data source.`
+            );
+            return null;
+        } else if (source.startsWith("data:")) {
+            const match = source.match(/^data:([^;,]+);base64,(.+)$/s);
+            if (!match) {
+                this.logger.warn("[Adapter] Skipping malformed media data URL.");
+                return null;
+            }
+            [, mimeType, data] = match;
+        } else if (/^https?:\/\//.test(source)) {
+            try {
+                const response = await axios.get(source, { responseType: "arraybuffer" });
+                data = Buffer.from(response.data, "binary").toString("base64");
+                mimeType = response.headers["content-type"]?.split(";", 1)[0];
+                if (!mimeType || mimeType === "application/octet-stream") {
+                    mimeType = mime.lookup(contentPart.filename || source) || undefined;
+                }
+            } catch (error) {
+                this.logger.warn(`[Adapter] Failed to download media from ${source}: ${error.message}`);
+                return null;
+            }
+        } else if (!claudeSource && !isImage && contentPart.file_data) {
+            data = contentPart.file_data;
+            mimeType = mime.lookup(contentPart.filename || "") || "application/octet-stream";
+        } else {
+            this.logger.warn("[Adapter] Skipping unsupported media URL.");
+            return null;
+        }
+
+        if (!data) {
+            this.logger.warn("[Adapter] Skipping empty media data.");
+            return null;
+        }
+        if (!mimeType || (functionResponse && !supportedMimeTypes.has(mimeType))) {
+            this.logger.warn(`[Adapter] Skipping media with unsupported MIME type: ${mimeType || "unknown"}`);
+            return null;
+        }
+
+        const extension = mime.extension(mimeType);
+        // Reference names are unique by output position; callers preserve original filenames/metadata.
+        const displayName = `function-output-${itemIndex + 1}${extension ? `.${extension}` : ""}`;
+        return { displayName, part: { inlineData: { data, displayName, mimeType } } };
+    }
+
+    async _convertClaudeToolResultMedia(content) {
+        const parts = [];
+        const convertBlocks = async blocks => {
+            const converted = [];
+            for (const block of blocks) {
+                if (block?.type === "document" && block.source?.type === "content") {
+                    const nestedContent = block.source.content;
+                    converted.push({
+                        ...block,
+                        source: {
+                            ...block.source,
+                            content: Array.isArray(nestedContent) ? await convertBlocks(nestedContent) : nestedContent,
+                        },
+                    });
+                } else if (block?.type === "image" || block?.type === "document") {
+                    const media = await this._loadFunctionResponseMedia(block, parts.length);
+                    if (media) {
+                        const metadata = { ...block };
+                        delete metadata.source;
+                        converted.push({ ...metadata, content: { $ref: media.displayName } });
+                        parts.push(media.part);
+                    } else {
+                        converted.push(block);
+                    }
+                } else {
+                    converted.push(block);
+                }
+            }
+            return converted;
+        };
+        return { content: await convertBlocks(content), parts };
+    }
+
     /**
      * Gemini exposes a flat function namespace, while the Responses API can group
      * functions under a `namespace` tool. Build a stable Gemini-safe alias for a
@@ -3254,20 +3357,26 @@ class FormatConverter {
             return ensureGeminiFunctionResponseObject(content ?? { result: "" });
         };
 
-        const normalizeClaudeToolResultResponse = toolResult => {
-            const responseContent = normalizeClaudeToolResultContent(toolResult.content);
-            if (toolResult.is_error !== true) return responseContent;
-
-            if (Object.prototype.hasOwnProperty.call(responseContent, "error")) {
-                return responseContent;
+        const normalizeClaudeToolResultResponse = async toolResult => {
+            let responseContent;
+            let parts = [];
+            if (Array.isArray(toolResult.content) && toolResult.content.some(block => block?.type !== "text")) {
+                const converted = await this._convertClaudeToolResultMedia(toolResult.content);
+                responseContent = { result: converted.content };
+                parts = converted.parts;
+            } else {
+                responseContent = normalizeClaudeToolResultContent(toolResult.content);
             }
-            if (
-                Object.keys(responseContent).length === 1 &&
-                Object.prototype.hasOwnProperty.call(responseContent, "result")
-            ) {
-                return { error: responseContent.result };
+            if (toolResult.is_error === true && !Object.prototype.hasOwnProperty.call(responseContent, "error")) {
+                responseContent = {
+                    error:
+                        Object.keys(responseContent).length === 1 &&
+                        Object.prototype.hasOwnProperty.call(responseContent, "result")
+                            ? responseContent.result
+                            : responseContent,
+                };
             }
-            return { error: responseContent };
+            return { ...(parts.length > 0 ? { parts } : {}), response: responseContent };
         };
 
         const claudeServerToolBlockTypes = new Set([
@@ -3297,7 +3406,7 @@ class FormatConverter {
                 const toolResults = message.content.filter(block => block.type === "tool_result");
                 if (toolResults.length > 0) {
                     for (const toolResult of toolResults) {
-                        const responseContent = normalizeClaudeToolResultResponse(toolResult);
+                        const convertedResult = await normalizeClaudeToolResultResponse(toolResult);
 
                         // Resolve function name using the map
                         const toolUseId = toolResult.tool_use_id;
@@ -3314,7 +3423,7 @@ class FormatConverter {
                             functionResponse: {
                                 ...(toolUseId ? { id: toolUseId } : {}),
                                 name: functionName,
-                                response: responseContent,
+                                ...convertedResult,
                             },
                         });
                     }
@@ -3326,12 +3435,12 @@ class FormatConverter {
                             if (block.type === "text") {
                                 pendingToolParts.push({ text: block.text });
                             } else if (block.type === "image") {
-                                pendingToolParts.push({
-                                    inlineData: {
-                                        data: block.source.data,
-                                        mimeType: block.source.media_type,
-                                    },
+                                const media = await this._loadFunctionResponseMedia(block, pendingToolParts.length, {
+                                    functionResponse: false,
                                 });
+                                pendingToolParts.push(
+                                    media?.part || { text: `[Claude media unavailable]\n${JSON.stringify(block)}` }
+                                );
                             }
                         }
                     }
@@ -4256,79 +4365,6 @@ class FormatConverter {
             }
         };
 
-        const supportedFunctionResponseMimeTypes = new Set([
-            "application/pdf",
-            "image/jpeg",
-            "image/png",
-            "image/webp",
-            "text/plain",
-        ]);
-        const loadFunctionResponseMedia = async (contentPart, itemIndex) => {
-            const isImage = contentPart?.type === "input_image";
-            const source = isImage
-                ? this.normalizeImageUrl(contentPart.image_url)
-                : contentPart?.file_data || contentPart?.file_url;
-
-            if (typeof source !== "string" || !source) {
-                this.logger.warn(
-                    `[Adapter] Skipping Response API ${contentPart?.type || "unknown"} function output because it has no supported data source.`
-                );
-                return null;
-            }
-
-            let data;
-            let mimeType;
-            if (source.startsWith("data:")) {
-                const match = source.match(/^data:([^;,]+);base64,(.+)$/s);
-                if (!match) {
-                    this.logger.warn("[Adapter] Skipping malformed data URL in Response API function output.");
-                    return null;
-                }
-                [, mimeType, data] = match;
-            } else if (/^https?:\/\//.test(source)) {
-                try {
-                    const response = await axios.get(source, { responseType: "arraybuffer" });
-                    data = Buffer.from(response.data, "binary").toString("base64");
-                    mimeType = response.headers["content-type"]?.split(";", 1)[0];
-                    if (!mimeType || mimeType === "application/octet-stream") {
-                        mimeType = mime.lookup(contentPart.filename || source) || undefined;
-                    }
-                } catch (error) {
-                    this.logger.warn(
-                        `[Adapter] Failed to download Response API function output media from ${source}: ${error.message}`
-                    );
-                    return null;
-                }
-            } else if (!isImage && contentPart.file_data) {
-                data = contentPart.file_data;
-                mimeType = mime.lookup(contentPart.filename || "") || "application/octet-stream";
-            } else {
-                this.logger.warn("[Adapter] Skipping unsupported media URL in Response API function output.");
-                return null;
-            }
-
-            if (!supportedFunctionResponseMimeTypes.has(mimeType)) {
-                this.logger.warn(
-                    `[Adapter] Skipping Response API function output media with unsupported MIME type: ${mimeType || "unknown"}`
-                );
-                return null;
-            }
-
-            const extension = mime.extension(mimeType);
-            // Reference names are unique by output position; preserve original filenames in response.output.
-            const displayName = `function-output-${itemIndex + 1}${extension ? `.${extension}` : ""}`;
-            return {
-                displayName,
-                part: {
-                    inlineData: {
-                        data,
-                        displayName,
-                        mimeType,
-                    },
-                },
-            };
-        };
-
         const convertFunctionCallOutput = async output => {
             if (!Array.isArray(output)) {
                 return { response: safeParseJSON(output, "unparsed_output") };
@@ -4344,7 +4380,7 @@ class FormatConverter {
                 }
 
                 if (contentPart?.type === "input_image" || contentPart?.type === "input_file") {
-                    const media = await loadFunctionResponseMedia(contentPart, itemIndex);
+                    const media = await this._loadFunctionResponseMedia(contentPart, itemIndex);
                     if (media) {
                         normalizedOutput.push({
                             content: { $ref: media.displayName },
