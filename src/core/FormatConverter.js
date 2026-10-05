@@ -2579,6 +2579,13 @@ class FormatConverter {
         const messagePartRanges = new Map();
         let reasoningContent = "";
         let webSearchQueries = [];
+        const hasNativeWebSearch =
+            Array.isArray(candidate.content?.parts) &&
+            candidate.content.parts.some(
+                part =>
+                    part?.toolCall?.toolType === "GOOGLE_SEARCH_WEB" ||
+                    part?.toolResponse?.toolType === "GOOGLE_SEARCH_WEB"
+            );
         if (candidate.content && Array.isArray(candidate.content.parts)) {
             for (let partIndex = 0; partIndex < candidate.content.parts.length; partIndex++) {
                 const part = candidate.content.parts[partIndex];
@@ -2660,6 +2667,7 @@ class FormatConverter {
         const grounding = this._extractResponseWebSearchGrounding(candidate, messageContent, messagePartRanges);
         if (webSearchQueries.length === 0) webSearchQueries = grounding.queries;
         if (
+            hasNativeWebSearch ||
             webSearchQueries.length > 0 ||
             grounding.annotations.length > 0 ||
             candidate.groundingMetadata?.groundingChunks?.length > 0
