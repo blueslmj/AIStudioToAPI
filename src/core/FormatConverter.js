@@ -2082,11 +2082,14 @@ class FormatConverter {
                             typeof funcCall.id === "string" && funcCall.id
                                 ? funcCall.id
                                 : `call_${this._generateRequestId()}`;
-                        const outputIndex = streamState.nextOutputIndex++;
                         const args = isCustom ? funcCall.args?.input : JSON.stringify(funcCall.args || {});
                         if (typeof args !== "string") {
-                            throw new Error(`Custom tool ${responseFunctionIdentity.name} returned a non-string input`);
+                            this.logger.warn(
+                                `[Adapter] Skipping custom tool ${responseFunctionIdentity.name}: returned a non-string input`
+                            );
+                            continue;
                         }
+                        const outputIndex = streamState.nextOutputIndex++;
                         const inputField = isCustom ? "input" : "arguments";
                         const callType = isCustom ? "custom_tool_call" : "function_call";
                         const inputEvent = isCustom
@@ -2476,7 +2479,10 @@ class FormatConverter {
                     const isCustom = responseFunctionIdentity.type === "custom";
                     const toolInput = isCustom ? funcCall.args?.input : JSON.stringify(funcCall.args || {});
                     if (typeof toolInput !== "string") {
-                        throw new Error(`Custom tool ${responseFunctionIdentity.name} returned a non-string input`);
+                        this.logger.warn(
+                            `[Adapter] Skipping custom tool ${responseFunctionIdentity.name}: returned a non-string input`
+                        );
+                        continue;
                     }
                     // Pass through the Gemini-issued call id so it round-trips into
                     // `functionCall.id`/`functionResponse.id` on the next request.
@@ -4915,7 +4921,9 @@ class FormatConverter {
                         Array.isArray(tools) && tools.some(t => t && responseHostedToolTypes.has(t.type));
                     if (hasFunctionDeclarations() && !allowedToolsHaveHostedTool) {
                         if (toolChoice.mode === "auto") {
-                            functionCallingConfig.mode = "AUTO";
+                            // Gemini only accepts allowedFunctionNames with ANY or VALIDATED.
+                            // VALIDATED still permits both natural language and tool calls.
+                            functionCallingConfig.mode = "VALIDATED";
                         } else if (toolChoice.mode === "required") {
                             functionCallingConfig.mode = "ANY";
                         }
