@@ -3017,6 +3017,8 @@ class FormatConverter {
             });
         };
         const emitSearchResults = (call, results) => {
+            // Native search responses can precede the grounding sources in the final chunk.
+            if (results.length === 0 && options.includeMetadata === false) return;
             const fresh = results.filter(result => {
                 const key = `${result.url}\u0000${result.title}`;
                 if (call.seenResults.has(key)) return false;
@@ -3080,6 +3082,8 @@ class FormatConverter {
                     const queries = this._normalizeWebSearchQueries(invocation.args?.queries || invocation.args?.query);
                     const call = ensureSearchCall(key, queries);
                     if (part.toolResponse) {
+                        call.responseReceived = true;
+                        state.claudeLastSearchResultCall = call;
                         emitSearchResults(call, searchResults());
                     }
                 } else if (type === "URL_CONTEXT") {
@@ -3119,8 +3123,11 @@ class FormatConverter {
             const hasSearch = searchQueries.length > 0 || state.claudeLastSearchCall;
             const hasFetch = context || state.claudeUrlCalls.size > 0;
             if ((queries.length > 0 || results.length > 0) && (hasSearch || !hasFetch)) {
-                const call = ensureSearchCall(null, queries);
+                const call = state.claudeLastSearchResultCall || ensureSearchCall(null, queries);
                 emitSearchResults(call, results);
+            }
+            for (const call of state.claudeWebToolCalls.values()) {
+                if (call.responseReceived && !call.resultSent) emitSearchResults(call, []);
             }
             const metadata = context?.urlMetadata || context?.url_metadata || [];
             for (const entry of Array.isArray(metadata) ? metadata : []) emitFetchResult(entry);
