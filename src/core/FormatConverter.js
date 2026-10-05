@@ -7,7 +7,6 @@
 
 const axios = require("axios");
 const mime = require("mime-types");
-const { createHash } = require("node:crypto");
 
 /**
  * Format Converter Module
@@ -406,7 +405,7 @@ class FormatConverter {
                     descriptionParts.push(
                         `The input must conform to this ${format.syntax} grammar:\n${format.definition}`
                     );
-                    this.logger.warn(
+                    this.logger.debug(
                         `[Adapter] Custom tool ${funcDef.name}: Gemini can only follow the grammar as instructions; constrained grammar decoding is unavailable.`
                     );
                 } else if (format && format.type !== "text") {
@@ -3074,12 +3073,9 @@ class FormatConverter {
             const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
             for (const part of parts) {
                 const invocation = part?.toolCall || part?.toolResponse;
-                if (!invocation) continue;
+                if (!invocation?.id) continue;
                 const type = invocation.toolType;
-                const identity =
-                    invocation.id ||
-                    createHash("sha256").update(this._serializeClaudeServerToolData(invocation)).digest("hex");
-                const key = `${type}:${identity}`;
+                const key = `${type}:${invocation.id}`;
                 if (type === "GOOGLE_SEARCH_WEB") {
                     const queries = this._normalizeWebSearchQueries(invocation.args?.queries || invocation.args?.query);
                     const call = ensureSearchCall(key, queries);
