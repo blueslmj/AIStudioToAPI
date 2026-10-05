@@ -1716,6 +1716,8 @@ class FormatConverter {
             streamState.groundingChunks = [];
             streamState.groundingSupports = [];
             streamState.webSearchQueries = [];
+            streamState.codeInterpreterCalls = [];
+            streamState.codeInterpreterContainerId = null;
             streamState.completed = false;
         };
 
@@ -1846,6 +1848,73 @@ class FormatConverter {
 
         const includeWebSearchSources =
             Array.isArray(responseInclude) && responseInclude.includes("web_search_call.action.sources");
+        const includeCodeInterpreterOutputs =
+            Array.isArray(responseInclude) && responseInclude.includes("code_interpreter_call.outputs");
+
+        const getCodeInterpreterContainerId = () => {
+            if (streamState.codeInterpreterContainerId) return streamState.codeInterpreterContainerId;
+            const requestedContainer = responseFields.tools?.find(tool => tool?.type === "code_interpreter")?.container;
+            streamState.codeInterpreterContainerId =
+                typeof requestedContainer === "string" && requestedContainer
+                    ? requestedContainer
+                    : `cntr_${this._generateRequestId()}`;
+            return streamState.codeInterpreterContainerId;
+        };
+
+        const ensureCodeInterpreterCall = (googleCallId, code = "") => {
+            const existing =
+                typeof googleCallId === "string" && googleCallId
+                    ? streamState.codeInterpreterCalls.find(call => call.google_call_id === googleCallId)
+                    : null;
+            if (existing) {
+                if (!existing.code && typeof code === "string") existing.code = code;
+                return existing;
+            }
+
+            const call = {
+                code: typeof code === "string" ? code : "",
+                google_call_id: typeof googleCallId === "string" ? googleCallId : null,
+                id: `ci_${this._generateRequestId()}`,
+                output_index: streamState.nextOutputIndex++,
+                status: "in_progress",
+            };
+            streamState.codeInterpreterCalls.push(call);
+            return call;
+        };
+
+        const findCodeInterpreterCall = googleCallId => {
+            if (typeof googleCallId === "string" && googleCallId) {
+                const matched = streamState.codeInterpreterCalls.find(call => call.google_call_id === googleCallId);
+                if (matched) return matched;
+            }
+            return streamState.codeInterpreterCalls.find(call => call.status === "in_progress") || null;
+        };
+
+        const completeCodeInterpreterCall = (call, executionResult = null, forcedStatus = null) => {
+            if (!call || call.status !== "in_progress") return;
+            const outcome = String(executionResult?.outcome || "");
+            const output = typeof executionResult?.output === "string" ? executionResult.output : "";
+            const outputs = output ? [{ logs: output, type: "logs" }] : [];
+            const status = forcedStatus || (outcome && outcome !== "OUTCOME_OK" ? "failed" : "completed");
+            const completedItem = {
+                code: call.code || null,
+                container_id: getCodeInterpreterContainerId(),
+                id: call.id,
+                outputs: includeCodeInterpreterOutputs ? outputs : null,
+                status,
+                type: "code_interpreter_call",
+            };
+            call.status = status;
+            streamState.outputItemsByIndex[call.output_index] = completedItem;
+            pushEvent("response.output_item.added", {
+                item: completedItem,
+                output_index: call.output_index,
+            });
+            pushEvent("response.output_item.done", {
+                item: completedItem,
+                output_index: call.output_index,
+            });
+        };
 
         const ensureWebSearchCall = (googleCallId, queries = []) => {
             const normalizedQueries = this._normalizeWebSearchQueries(queries);
@@ -2233,6 +2302,19 @@ class FormatConverter {
                         continue;
                     }
 
+                    if (part?.executableCode) {
+                        ensureCodeInterpreterCall(part.executableCode.id, part.executableCode.code);
+                        continue;
+                    }
+
+                    if (part?.codeExecutionResult) {
+                        const call =
+                            findCodeInterpreterCall(part.codeExecutionResult.id) ||
+                            ensureCodeInterpreterCall(part.codeExecutionResult.id);
+                        completeCodeInterpreterCall(call, part.codeExecutionResult);
+                        continue;
+                    }
+
                     if (part?.text) {
                         const messageItem = ensureMessageItem();
                         streamState.messageText += part.text;
@@ -2352,6 +2434,9 @@ class FormatConverter {
 
             // Completion
             if (candidate.finishReason && !streamState.completed) {
+                for (const call of streamState.codeInterpreterCalls) {
+                    completeCodeInterpreterCall(call, null, "incomplete");
+                }
                 // Metadata is a fallback for responses without native tool invocations.
                 if (!streamState.hasNativeUrlContext) {
                     streamState.urlContextUrls.map(addOpenPageCall).forEach(completeWebSearchCall);
@@ -2666,6 +2751,48 @@ class FormatConverter {
         let webSearchQueries = [];
         const nativeSearchItems = [];
         const nativeSearchItemsByGoogleId = new Map();
+        const includeCodeInterpreterOutputs =
+            Array.isArray(responseInclude) && responseInclude.includes("code_interpreter_call.outputs");
+        const requestedCodeInterpreterContainer = responseFields.tools?.find(
+            tool => tool?.type === "code_interpreter"
+        )?.container;
+        const codeInterpreterContainerId =
+            typeof requestedCodeInterpreterContainer === "string" && requestedCodeInterpreterContainer
+                ? requestedCodeInterpreterContainer
+                : `cntr_${this._generateRequestId()}`;
+        const codeInterpreterItems = [];
+        const codeInterpreterItemsByGoogleId = new Map();
+        const createCodeInterpreterItem = (googleCallId, code = "") => {
+            const item = {
+                code: typeof code === "string" && code ? code : null,
+                container_id: codeInterpreterContainerId,
+                id: `ci_${this._generateRequestId()}`,
+                outputs: includeCodeInterpreterOutputs ? [] : null,
+                status: "in_progress",
+                type: "code_interpreter_call",
+            };
+            codeInterpreterItems.push(item);
+            output.push(item);
+            if (typeof googleCallId === "string" && googleCallId) {
+                codeInterpreterItemsByGoogleId.set(googleCallId, item);
+            }
+            return item;
+        };
+        const findCodeInterpreterItem = googleCallId => {
+            if (typeof googleCallId === "string" && googleCallId) {
+                const matched = codeInterpreterItemsByGoogleId.get(googleCallId);
+                if (matched) return matched;
+            }
+            return codeInterpreterItems.find(item => item.status === "in_progress") || null;
+        };
+        const completeCodeInterpreterItem = (item, executionResult) => {
+            const outcome = String(executionResult?.outcome || "");
+            const executionOutput = typeof executionResult?.output === "string" ? executionResult.output : "";
+            item.status = outcome && outcome !== "OUTCOME_OK" ? "failed" : "completed";
+            if (includeCodeInterpreterOutputs) {
+                item.outputs = executionOutput ? [{ logs: executionOutput, type: "logs" }] : [];
+            }
+        };
         const createNativeSearchItem = queries => {
             const normalizedQueries = this._normalizeWebSearchQueries(queries);
             const item = {
@@ -2729,6 +2856,23 @@ class FormatConverter {
                     ensureNativeSearchItem(part.toolCall.id, queries);
                 } else if (part?.toolResponse?.toolType === "GOOGLE_SEARCH_WEB") {
                     ensureNativeSearchItem(part.toolResponse.id);
+                } else if (part?.executableCode) {
+                    const existing =
+                        typeof part.executableCode.id === "string" && part.executableCode.id
+                            ? codeInterpreterItemsByGoogleId.get(part.executableCode.id)
+                            : null;
+                    if (existing) {
+                        if (!existing.code && typeof part.executableCode.code === "string") {
+                            existing.code = part.executableCode.code;
+                        }
+                    } else {
+                        createCodeInterpreterItem(part.executableCode.id, part.executableCode.code);
+                    }
+                } else if (part?.codeExecutionResult) {
+                    const item =
+                        findCodeInterpreterItem(part.codeExecutionResult.id) ||
+                        createCodeInterpreterItem(part.codeExecutionResult.id);
+                    completeCodeInterpreterItem(item, part.codeExecutionResult);
                 } else if (part.functionCall) {
                     // Function call
                     const funcCall = part.functionCall;
@@ -2766,6 +2910,10 @@ class FormatConverter {
                     );
                 }
             }
+        }
+
+        for (const item of codeInterpreterItems) {
+            if (item.status === "in_progress") item.status = "incomplete";
         }
 
         if (reasoningContent) {
