@@ -1706,6 +1706,9 @@ class FormatConverter {
             streamState.reasoningSummaryPartAdded = false;
             streamState.webSearchCallsByGoogleId = Object.create(null);
             streamState.webSearchCallOrder = [];
+            streamState.hasNativeUrlContext = false;
+            streamState.openPageCallsByGoogleId = Object.create(null);
+            streamState.urlContextUrls = [];
             streamState.messageAnnotations = [];
             streamState.messageAnnotationKeys = Object.create(null);
             streamState.messagePartRanges = new Map();
@@ -1921,6 +1924,28 @@ class FormatConverter {
 
             const lastKey = streamState.webSearchCallOrder[streamState.webSearchCallOrder.length - 1];
             return lastKey ? streamState.webSearchCallsByGoogleId[lastKey] : null;
+        };
+
+        const addOpenPageCall = url => {
+            const call = {
+                action: { type: "open_page", url },
+                id: `ws_${this._generateRequestId()}`,
+                output_index: streamState.nextOutputIndex++,
+                status: "in_progress",
+            };
+            const item = {
+                action: call.action,
+                id: call.id,
+                status: call.status,
+                type: "web_search_call",
+            };
+            streamState.outputItemsByIndex[call.output_index] = item;
+            pushEvent("response.output_item.added", { item, output_index: call.output_index });
+            pushEvent("response.web_search_call.in_progress", {
+                item_id: call.id,
+                output_index: call.output_index,
+            });
+            return call;
         };
 
         const finalizeReasoningItem = () => {
@@ -2173,6 +2198,26 @@ class FormatConverter {
                         continue;
                     }
 
+                    if (part?.toolCall?.toolType === "URL_CONTEXT") {
+                        streamState.hasNativeUrlContext = true;
+                        const toolCall = part.toolCall;
+                        const calls = (streamState.openPageCallsByGoogleId[toolCall.id] ||= []);
+                        for (const url of toolCall.args?.urls || []) {
+                            if (typeof url === "string" && url) calls.push(addOpenPageCall(url));
+                        }
+                        continue;
+                    }
+
+                    if (part?.toolResponse?.toolType === "URL_CONTEXT") {
+                        streamState.hasNativeUrlContext = true;
+                        const toolResponse = part.toolResponse;
+                        const calls =
+                            streamState.openPageCallsByGoogleId[toolResponse.id] ||
+                            this._extractResponseUrlContextUrls(toolResponse.response).map(addOpenPageCall);
+                        calls.forEach(completeWebSearchCall);
+                        continue;
+                    }
+
                     if (part?.text) {
                         const messageItem = ensureMessageItem();
                         streamState.messageText += part.text;
@@ -2285,8 +2330,20 @@ class FormatConverter {
                 }
             }
 
+            const urlContextUrls = this._extractResponseUrlContextUrls(
+                candidate.urlContextMetadata || candidate.url_context_metadata
+            );
+            if (urlContextUrls.length > 0) streamState.urlContextUrls = urlContextUrls;
+
             // Completion
             if (candidate.finishReason && !streamState.completed) {
+                // Metadata is a fallback for responses without native tool invocations.
+                if (!streamState.hasNativeUrlContext) {
+                    streamState.urlContextUrls.map(addOpenPageCall).forEach(completeWebSearchCall);
+                }
+                for (const calls of Object.values(streamState.openPageCallsByGoogleId)) {
+                    calls.forEach(completeWebSearchCall);
+                }
                 const grounding = this._extractResponseWebSearchGrounding(
                     {
                         groundingMetadata: {
@@ -2299,7 +2356,9 @@ class FormatConverter {
                 );
                 if (
                     grounding.queries.length > 0 ||
-                    grounding.annotations.length > 0 ||
+                    (grounding.annotations.length > 0 &&
+                        !streamState.hasNativeUrlContext &&
+                        streamState.urlContextUrls.length === 0) ||
                     streamState.webSearchCallOrder.length > 0
                 ) {
                     let searchCall = findWebSearchCall();
@@ -2668,18 +2727,37 @@ class FormatConverter {
         }
 
         const grounding = this._extractResponseWebSearchGrounding(candidate, messageContent, messagePartRanges);
+        const parts = Array.isArray(candidate.content?.parts) ? candidate.content.parts : [];
+        const urlCalls = parts.filter(part => part?.toolCall?.toolType === "URL_CONTEXT");
+        const urlResults = parts.filter(part => part?.toolResponse?.toolType === "URL_CONTEXT");
+        const urlContextUrls =
+            urlCalls.length > 0
+                ? urlCalls.flatMap(part => part.toolCall.args?.urls || []).filter(url => typeof url === "string" && url)
+                : urlResults.length > 0
+                  ? urlResults.flatMap(part => this._extractResponseUrlContextUrls(part.toolResponse.response))
+                  : this._extractResponseUrlContextUrls(candidate.urlContextMetadata || candidate.url_context_metadata);
+        const hasUrlContext = urlCalls.length > 0 || urlResults.length > 0 || urlContextUrls.length > 0;
         if (webSearchQueries.length === 0) webSearchQueries = grounding.queries;
         if (
             hasNativeWebSearch ||
             webSearchQueries.length > 0 ||
-            grounding.annotations.length > 0 ||
-            candidate.groundingMetadata?.groundingChunks?.length > 0
+            (!hasUrlContext &&
+                (grounding.annotations.length > 0 || candidate.groundingMetadata?.groundingChunks?.length > 0))
         ) {
             output.push({
                 action: {
                     ...(webSearchQueries.length > 0 ? { queries: webSearchQueries } : {}),
                     type: "search",
                 },
+                id: `ws_${this._generateRequestId()}`,
+                status: "completed",
+                type: "web_search_call",
+            });
+        }
+
+        for (const url of urlContextUrls) {
+            output.push({
+                action: { type: "open_page", url },
                 id: `ws_${this._generateRequestId()}`,
                 status: "completed",
                 type: "web_search_call",
@@ -2779,6 +2857,13 @@ class FormatConverter {
         return [
             ...new Set(queries.filter(query => typeof query === "string" && query.trim()).map(query => query.trim())),
         ];
+    }
+
+    _extractResponseUrlContextUrls(metadata) {
+        const entries = metadata?.urlMetadata || metadata?.url_metadata || [];
+        return entries
+            .map(entry => entry?.retrievedUrl || entry?.retrieved_url)
+            .filter(url => typeof url === "string" && url);
     }
 
     _utf8ByteOffsetToStringIndex(value, byteOffset) {
