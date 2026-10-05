@@ -2093,9 +2093,13 @@ class FormatConverter {
                     streamState.groundingSupports.push(
                         ...candidateGrounding.groundingSupports.map(support => ({
                             ...support,
-                            _responseTextPartRange:
-                                candidatePartRanges.get(support?.segment?.partIndex) ||
-                                streamState.messagePartRanges.get(support?.segment?.partIndex),
+
+                            _responseTextChunkRange: candidatePartRanges.get(support?.segment?.partIndex),
+                            // Snapshot both interpretations: Gemini metadata may
+                            // describe the accumulated Part or this chunk's delta.
+                            _responseTextPartRange: streamState.messagePartRanges.has(support?.segment?.partIndex)
+                                ? { ...streamState.messagePartRanges.get(support.segment.partIndex) }
+                                : candidatePartRanges.get(support?.segment?.partIndex),
                         }))
                     );
                 }
@@ -2805,17 +2809,28 @@ class FormatConverter {
         for (const support of supports) {
             const segment = support?.segment || {};
             const segmentText = typeof segment.text === "string" ? segment.text : "";
-            const partRange =
+            let partRange =
                 support?._responseTextPartRange ||
                 (Number.isInteger(segment.partIndex) && messagePartRanges instanceof Map
                     ? messagePartRanges.get(segment.partIndex)
                     : null);
-            const partText = partRange?.text || messageText;
-            const partBaseIndex = Number.isInteger(partRange?.startIndex) ? partRange.startIndex : 0;
             const segmentStartByte = Number.isFinite(segment.startIndex) ? Math.max(0, segment.startIndex) : 0;
             const segmentEndByte = Number.isFinite(segment.endIndex)
                 ? Math.max(segmentStartByte, segment.endIndex)
                 : segmentStartByte + Buffer.byteLength(segmentText, "utf8");
+            if (segmentText && support?._responseTextChunkRange) {
+                const matchingRange = [partRange, support._responseTextChunkRange].find(range => {
+                    if (!range || segmentEndByte > Buffer.byteLength(range.text, "utf8")) return false;
+                    const start = this._utf8ByteOffsetToStringIndex(range.text, segmentStartByte);
+                    const end = this._utf8ByteOffsetToStringIndex(range.text, segmentEndByte);
+                    return range.text.slice(start, end) === segmentText;
+                });
+                // Prefer cumulative offsets when both match; use delta-local
+                // offsets only when the segment text confirms that interpretation.
+                if (matchingRange) partRange = matchingRange;
+            }
+            const partText = partRange?.text || messageText;
+            const partBaseIndex = Number.isInteger(partRange?.startIndex) ? partRange.startIndex : 0;
             let localStartIndex = this._utf8ByteOffsetToStringIndex(partText, segmentStartByte);
             let localEndIndex = this._utf8ByteOffsetToStringIndex(partText, segmentEndByte);
 
