@@ -3470,6 +3470,14 @@ class FormatConverter {
         return blocks;
     }
 
+    _formatClaudeServerToolUsage(usage = {}) {
+        const counts = Object.fromEntries(Object.entries(usage).filter(([, count]) => count > 0));
+        if (Object.keys(counts).length === 0) return {};
+
+        // Both web counters are required whenever server_tool_use is present.
+        return { web_fetch_requests: 0, web_search_requests: 0, ...counts };
+    }
+
     _buildClaudeServerToolBlocks(candidate, state = {}, options = {}) {
         const includeCodeExecution = options.includeCodeExecution !== false;
         const includeMetadata = options.includeMetadata !== false;
@@ -4602,9 +4610,7 @@ class FormatConverter {
                 stopReason = "end_turn";
             }
 
-            const serverToolUse = Object.fromEntries(
-                Object.entries(streamState.serverToolUsage || {}).filter(([, count]) => count > 0)
-            );
+            const serverToolUse = this._formatClaudeServerToolUsage(streamState.serverToolUsage);
             events.push({
                 delta: {
                     stop_reason: stopReason,
@@ -4736,9 +4742,7 @@ class FormatConverter {
             stopReason = "end_turn"; // Claude doesn't have a direct equivalent
         }
 
-        const serverToolUse = Object.fromEntries(
-            Object.entries(serverToolState.serverToolUsage || {}).filter(([, count]) => count > 0)
-        );
+        const serverToolUse = this._formatClaudeServerToolUsage(serverToolState.serverToolUsage);
 
         return {
             content: content.length > 0 ? content : [{ text: "", type: "text" }],
