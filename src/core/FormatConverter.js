@@ -360,7 +360,7 @@ class FormatConverter {
         const usedNames = new Set();
         let namespaceFunctionCount = 0;
 
-        const addDeclaration = (funcDef, namespace = null) => {
+        const addDeclaration = (funcDef, namespace = null, namespaceDescription = null) => {
             if (!funcDef || typeof funcDef.name !== "string" || !funcDef.name) return;
 
             let geminiName = funcDef.name;
@@ -392,6 +392,7 @@ class FormatConverter {
             const declaration = { name: geminiName };
             const descriptionParts = [];
             if (namespace) descriptionParts.push(`Responses API namespace: ${namespace}.`);
+            if (namespaceDescription) descriptionParts.push(namespaceDescription);
             if (funcDef.description) descriptionParts.push(funcDef.description);
             if (funcDef.type === "custom") {
                 descriptionParts.push(
@@ -435,7 +436,7 @@ class FormatConverter {
                         nestedTool.function && typeof nestedTool.function === "object"
                             ? nestedTool.function
                             : nestedTool;
-                    addDeclaration(funcDef, tool.name);
+                    addDeclaration(funcDef, tool.name, tool.description);
                 }
             }
         }
