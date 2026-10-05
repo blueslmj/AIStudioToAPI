@@ -201,6 +201,13 @@ class FormatConverter {
         return null;
     }
 
+    _getGeminiPromptBlockMessage(promptFeedback) {
+        const reason = promptFeedback?.blockReason;
+        if (typeof reason !== "string" || !reason || reason === "BLOCK_REASON_UNSPECIFIED") return null;
+        const detail = promptFeedback.blockReasonMessage;
+        return `Gemini blocked the request (${reason}).${typeof detail === "string" && detail ? ` ${detail}` : ""}`;
+    }
+
     // Shared media loading for Responses outputs and Claude images/documents.
     async _loadFunctionResponseMedia(contentPart, itemIndex, { functionResponse = true } = {}) {
         const supportedMimeTypes = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain"]);
@@ -1650,7 +1657,7 @@ class FormatConverter {
             streamState = {};
         }
 
-        if (!googleChunk || googleChunk.trim() === "") {
+        if (streamState.completed || !googleChunk || googleChunk.trim() === "") {
             return null;
         }
 
@@ -2017,6 +2024,7 @@ class FormatConverter {
         };
 
         const handleGoogleResponseObject = googleResponse => {
+            if (streamState.completed) return;
             ensureInitialized();
 
             // Cache usage data if present
@@ -2032,6 +2040,12 @@ class FormatConverter {
                             googleResponse.promptFeedback
                         )}`
                     );
+                }
+                const message = this._getGeminiPromptBlockMessage(googleResponse?.promptFeedback);
+                if (message) {
+                    streamState.error = { code: "invalid_prompt", message };
+                    pushEvent("error", { ...streamState.error, param: null });
+                    streamState.completed = true;
                 }
                 return;
             }
@@ -3822,7 +3836,7 @@ class FormatConverter {
             );
             streamState = {};
         }
-        if (!googleChunk || googleChunk.trim() === "") {
+        if (streamState.completed || !googleChunk || googleChunk.trim() === "") {
             return null;
         }
 
@@ -3873,6 +3887,12 @@ class FormatConverter {
                         googleResponse.promptFeedback
                     )}`
                 );
+            }
+            const message = this._getGeminiPromptBlockMessage(googleResponse.promptFeedback);
+            if (message) {
+                streamState.error = { message, type: "invalid_request_error" };
+                streamState.completed = true;
+                return `event: error\ndata: ${JSON.stringify({ error: streamState.error, type: "error" })}\n\n`;
             }
             return null;
         }
@@ -4141,6 +4161,7 @@ class FormatConverter {
             });
 
             events.push({ type: "message_stop" });
+            streamState.completed = true;
         }
 
         if (events.length === 0) return null;

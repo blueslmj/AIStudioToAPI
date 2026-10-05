@@ -1848,6 +1848,8 @@ class RequestHandler {
                                     model,
                                     streamState
                                 );
+                                if (streamState.error)
+                                    this._markTrackedResponseError(res, streamState.error.message, 400);
                                 if (this._isResponseWritable(res)) {
                                     try {
                                         if (translatedChunk) {
@@ -2193,6 +2195,8 @@ class RequestHandler {
                                     model,
                                     streamState
                                 );
+                                if (streamState.error)
+                                    this._markTrackedResponseError(res, streamState.error.message, 400);
                                 if (this._isResponseWritable(res)) {
                                     try {
                                         if (translatedChunk) {
@@ -2587,6 +2591,7 @@ class RequestHandler {
                         model,
                         streamState
                     );
+                    if (streamState.error) this._markTrackedResponseError(res, streamState.error.message, 400);
                     if (claudeChunk) {
                         // Before writing, ensure the response is still writable to avoid
                         // throwing if the client disconnected mid-stream.
@@ -2606,6 +2611,7 @@ class RequestHandler {
                             break;
                         }
                     }
+                    if (streamState.error) break;
                 }
             }
         } catch (error) {
@@ -3535,6 +3541,7 @@ class RequestHandler {
                         model,
                         streamState
                     );
+                    if (streamState.error) this._markTrackedResponseError(res, streamState.error.message, 400);
                     if (typeof streamState.sequenceNumber === "number") {
                         res.__responseApiSeq = streamState.sequenceNumber;
                     }
@@ -3554,6 +3561,7 @@ class RequestHandler {
                             break;
                         }
                     }
+                    if (streamState.error) break;
                 }
             }
         } catch (error) {
