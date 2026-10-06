@@ -428,18 +428,7 @@ class ClaudeRequestConverter extends FormatConverter {
             thinkingConfig = { ...(thinkingConfig || {}), includeThoughts: true };
         }
 
-        // Apply model name suffix thinkingLevel
-        if (modelThinkingLevel) {
-            if (!thinkingConfig) thinkingConfig = {};
-            thinkingConfig.thinkingLevel = modelThinkingLevel;
-        }
-
-        if (thinkingConfig) {
-            generationConfig.thinkingConfig = thinkingConfig;
-            this.logger.info(
-                `[Adapter] Successfully extracted and converted thinking config: ${JSON.stringify(thinkingConfig)}`
-            );
-        }
+        this._applyThinkingConfig(generationConfig, thinkingConfig, modelThinkingLevel);
 
         // Handle Claude's structured output (output_format)
         // Ref: https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs

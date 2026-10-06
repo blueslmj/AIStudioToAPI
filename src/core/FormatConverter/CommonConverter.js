@@ -239,7 +239,7 @@ class FormatConverter {
      *   push: (...parts: object[]) => number,
      *   some: (predicate: (part: object) => boolean) => boolean
      * }} Mutable content-parts buffer
-     * @private
+     * @protected
      */
     _createGoogleContentPartsBuffer(contents, role) {
         let parts = [];
@@ -259,6 +259,24 @@ class FormatConverter {
                 return parts.some(predicate);
             },
         };
+    }
+
+    /**
+     * Apply the model-name thinking level override and attach the resulting
+     * thinking config to a Gemini generation config.
+     *
+     * @param {object} generationConfig - Gemini generation config
+     * @param {object|null} thinkingConfig - Previously resolved thinking config
+     * @param {string|null} modelThinkingLevel - Model suffix override
+     * @protected
+     */
+    _applyThinkingConfig(generationConfig, thinkingConfig, modelThinkingLevel) {
+        if (modelThinkingLevel) {
+            if (!thinkingConfig) thinkingConfig = {};
+            thinkingConfig.thinkingLevel = modelThinkingLevel;
+        }
+
+        if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
     }
 
     getDefaultSafetySettings() {

@@ -356,18 +356,7 @@ class ChatCompletionsConverter extends FormatConverter {
             thinkingConfig = { ...(thinkingConfig || {}), includeThoughts: true };
         }
 
-        // If model name suffix specifies thinkingLevel, override directly (highest priority)
-        if (modelThinkingLevel) {
-            if (!thinkingConfig) {
-                thinkingConfig = {};
-            }
-            thinkingConfig.thinkingLevel = modelThinkingLevel;
-            this.logger.info(`[Adapter] Applied thinkingLevel from model name suffix: ${modelThinkingLevel}`);
-        }
-
-        if (thinkingConfig) {
-            generationConfig.thinkingConfig = thinkingConfig;
-        }
+        this._applyThinkingConfig(generationConfig, thinkingConfig, modelThinkingLevel);
 
         googleRequest.generationConfig = generationConfig;
 

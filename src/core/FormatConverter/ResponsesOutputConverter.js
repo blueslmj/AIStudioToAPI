@@ -16,10 +16,16 @@ class ResponsesOutputConverter extends FormatConverter {
     }
 
     /**
-     * Convert Google response to OpenAI Response API format (non-streaming)
-     * @param {object} googleResponse - Google API response
-     * @param {string} modelName - Model name
-     * @returns {object} - OpenAI Response API format response
+     * Convert a non-streaming Gemini GenerateContent response into an OpenAI
+     * Responses API response object.
+     *
+     * @param {object} googleResponse - Gemini GenerateContent response
+     * @param {string} [modelName="gemini-flash-lite-latest"] - Model reported in the response
+     * @param {object} [responseDefaults={}] - Responses request fields copied into the response; `include` is
+     * used to select optional nested fields and is not echoed into the response
+     * @param {Record<string, {name: string, namespace?: string, type?: string}>} [responseFunctionNameMap={}]
+     * Gemini function-name aliases mapped back to their Responses API identities
+     * @returns {object} OpenAI Responses API response
      */
     convertGoogleToResponseAPINonStream(
         googleResponse,

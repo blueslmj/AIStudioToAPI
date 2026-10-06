@@ -506,6 +506,21 @@ class ClaudeResponseConverter extends FormatConverter {
             streamState.textBlockStopped = true;
         };
 
+        const ensureTextBlock = () => {
+            closeThinkingBlock();
+            if (streamState.textBlockStarted && !streamState.textBlockStopped) return;
+
+            events.push({
+                content_block: { text: "", type: "text" },
+                index: streamState.contentBlockIndex,
+                type: "content_block_start",
+            });
+            streamState.textBlockStarted = true;
+            streamState.textBlockStopped = false;
+            streamState.textBlockIndex = streamState.contentBlockIndex;
+            streamState.contentBlockIndex++;
+        };
+
         const emitServerToolBlocks = blocks => {
             for (const block of blocks) {
                 closeThinkingBlock();
@@ -547,18 +562,7 @@ class ClaudeResponseConverter extends FormatConverter {
         const emitTextContent = (text, citations = []) => {
             if (!text && citations.length === 0) return;
 
-            closeThinkingBlock();
-            if (!streamState.textBlockStarted || streamState.textBlockStopped) {
-                events.push({
-                    content_block: { text: "", type: "text" },
-                    index: streamState.contentBlockIndex,
-                    type: "content_block_start",
-                });
-                streamState.textBlockStarted = true;
-                streamState.textBlockStopped = false;
-                streamState.textBlockIndex = streamState.contentBlockIndex;
-                streamState.contentBlockIndex++;
-            }
+            ensureTextBlock();
 
             if (text) {
                 events.push({
@@ -638,20 +642,7 @@ class ClaudeResponseConverter extends FormatConverter {
                     emitTextContent(part.text);
                 } else if (part.inlineData) {
                     // Image output - convert to markdown image format for streaming
-                    // Close thinking block if open
-                    closeThinkingBlock();
-                    // Start text block if not started
-                    if (!streamState.textBlockStarted || streamState.textBlockStopped) {
-                        events.push({
-                            content_block: { text: "", type: "text" },
-                            index: streamState.contentBlockIndex,
-                            type: "content_block_start",
-                        });
-                        streamState.textBlockStarted = true;
-                        streamState.textBlockStopped = false;
-                        streamState.textBlockIndex = streamState.contentBlockIndex;
-                        streamState.contentBlockIndex++;
-                    }
+                    ensureTextBlock();
                     // Send image as markdown text delta
                     const imageMarkdown = `![Generated Image](data:${part.inlineData.mimeType};base64,${part.inlineData.data})`;
                     events.push({

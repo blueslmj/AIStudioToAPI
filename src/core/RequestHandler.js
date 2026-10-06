@@ -251,8 +251,7 @@ class RequestHandler {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
             if (!this.connectionRegistry.isInGracePeriod() && !this.connectionRegistry.isReconnectingInProgress()) {
-                const connectionReady = await this._waitForConnection(WS_CONNECTION_READY_TIMEOUT_MS);
-                return connectionReady;
+                return await this._waitForConnection(WS_CONNECTION_READY_TIMEOUT_MS);
             }
             await new Promise(resolve => setTimeout(resolve, 100));
         }
@@ -3177,8 +3176,7 @@ class RequestHandler {
                 }
             }
 
-            const fullBodyBuffer = Buffer.concat(chunks);
-            let responseBodyBuffer = fullBodyBuffer;
+            let responseBodyBuffer = Buffer.concat(chunks);
 
             try {
                 const fullResponse = JSON.parse(responseBodyBuffer.toString());
@@ -4238,9 +4236,6 @@ class RequestHandler {
             }
             // Model name suffix thinkingLevel has highest priority, direct override
             bodyObj.generationConfig.thinkingConfig.thinkingLevel = modelThinkingLevel;
-            this.logger.info(
-                `[Proxy] Applied thinkingLevel from model name suffix: ${modelThinkingLevel} (Google Native)`
-            );
         }
 
         // Pre-process native Google requests
