@@ -5,7 +5,9 @@
  * Author: Ellinav, iBenzene, bbbugg
  */
 
-class ClaudeResponseConverter {
+const FormatConverter = require("./CommonConverter");
+
+class ClaudeResponseConverter extends FormatConverter {
     _parseClaudeUsage(usageMetadata = {}) {
         const parsedUsage = this._parseUsage({ usageMetadata });
         const cacheReadInputTokens = parsedUsage.prompt_tokens_details.cached_tokens || 0;

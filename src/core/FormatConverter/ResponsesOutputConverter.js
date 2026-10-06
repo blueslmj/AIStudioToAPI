@@ -5,7 +5,9 @@
  * Author: Ellinav, iBenzene, bbbugg
  */
 
-class ResponsesOutputConverter {
+const FormatConverter = require("./CommonConverter");
+
+class ResponsesOutputConverter extends FormatConverter {
     _resolveResponseFunctionIdentity(name, functionNameMap) {
         if (functionNameMap && Object.prototype.hasOwnProperty.call(functionNameMap, name)) {
             return functionNameMap[name] || { name };

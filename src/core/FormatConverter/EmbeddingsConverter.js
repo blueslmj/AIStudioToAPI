@@ -5,7 +5,9 @@
  * Author: Ellinav, iBenzene, bbbugg
  */
 
-class EmbeddingsConverter {
+const FormatConverter = require("./CommonConverter");
+
+class EmbeddingsConverter extends FormatConverter {
     /**
      * Convert OpenAI embeddings request format to Google's OpenAI-compatible embeddings endpoint.
      * @param {object} openaiBody - OpenAI embeddings request body

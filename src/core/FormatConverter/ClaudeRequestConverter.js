@@ -9,7 +9,7 @@ const axios = require("axios");
 const mime = require("mime-types");
 const FormatConverter = require("./CommonConverter");
 
-class ClaudeRequestConverter {
+class ClaudeRequestConverter extends FormatConverter {
     async _convertClaudeToolResultMedia(content) {
         const parts = [];
         const convertBlocks = async blocks => {

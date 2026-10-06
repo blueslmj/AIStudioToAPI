@@ -9,7 +9,7 @@ const axios = require("axios");
 const mime = require("mime-types");
 const FormatConverter = require("./CommonConverter");
 
-class ResponsesRequestConverter {
+class ResponsesRequestConverter extends FormatConverter {
     /**
      * Gemini exposes a flat function namespace, while the Responses API can group
      * functions under a `namespace` tool. Build a stable Gemini-safe alias for a

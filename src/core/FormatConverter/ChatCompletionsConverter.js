@@ -9,7 +9,7 @@ const axios = require("axios");
 const mime = require("mime-types");
 const FormatConverter = require("./CommonConverter");
 
-class ChatCompletionsConverter {
+class ChatCompletionsConverter extends FormatConverter {
     /**
      * Convert OpenAI request format to Google Gemini format
      * @param {object} openaiBody - OpenAI format request body

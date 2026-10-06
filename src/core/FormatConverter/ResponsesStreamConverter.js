@@ -5,7 +5,9 @@
  * Author: Ellinav, iBenzene, bbbugg
  */
 
-class ResponsesStreamConverter {
+const ResponsesOutputConverter = require("./ResponsesOutputConverter");
+
+class ResponsesStreamConverter extends ResponsesOutputConverter {
     /**
      * Convert Google streaming chunk to OpenAI Response API format
      * @param {string} googleChunk - Google API streaming chunk

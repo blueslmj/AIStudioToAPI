@@ -492,7 +492,7 @@ class FormatConverter {
      * use this for model-name-driven overrides such as the `-search` suffix.
      * @param {boolean} [options.forceUrlContext] - When truthy, force-enable `urlContext` for this request even if
      * `config.forceUrlContext` is disabled. Falsy values fall back to the global setting.
-     * @private
+     * @protected
      */
     _finalizeGoogleRequest(googleRequest, options = {}) {
         const forceCodeExecution = options.forceCodeExecution || this.serverSystem.config.forceCodeExecution;
