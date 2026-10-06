@@ -125,13 +125,10 @@ class ClaudeHandler extends RetryHandler {
                             afterRetries: false,
                         });
                         this._sendErrorResponse(res, initialMessage.status || 500, initialMessage.message, "api_error");
-                        if (!skipFinalFailureSwitch && !this._isConnectionResetError(initialMessage)) {
-                            await this.authSwitcher.handleRequestFailureAndSwitch(initialMessage, null);
-                        } else if (skipFinalFailureSwitch) {
-                            this.logger.info(
-                                "[Request] Immediate-switch retries exhausted, skipping additional account switch."
-                            );
-                        }
+                        const accountSwitchTask = this._handleFinalFailureAccountSwitch(initialMessage, {
+                            skipAccountSwitch: skipFinalFailureSwitch,
+                        });
+                        if (accountSwitchTask) await accountSwitchTask;
                         return;
                     }
 
@@ -187,13 +184,8 @@ class ClaudeHandler extends RetryHandler {
                                     "api_error"
                                 );
                             }
-                            if (!result.error.skipAccountSwitch && !this._isConnectionResetError(result.error)) {
-                                await this.authSwitcher.handleRequestFailureAndSwitch(result.error, null);
-                            } else if (result.error.skipAccountSwitch) {
-                                this.logger.info(
-                                    "[Request] Immediate-switch retries exhausted, skipping additional account switch."
-                                );
-                            }
+                            const accountSwitchTask = this._handleFinalFailureAccountSwitch(result.error);
+                            if (accountSwitchTask) await accountSwitchTask;
                             return;
                         }
 
@@ -392,9 +384,8 @@ class ClaudeHandler extends RetryHandler {
                         `❌ [Request] Received error from browser, will trigger switching logic. Status code: ${response.status}, message: ${response.message}`
                     );
                     this._sendErrorResponse(res, response.status || 500, response.message, "api_error");
-                    if (!this._isConnectionResetError(response)) {
-                        await this.authSwitcher.handleRequestFailureAndSwitch(response, null);
-                    }
+                    const accountSwitchTask = this._handleFinalFailureAccountSwitch(response);
+                    if (accountSwitchTask) await accountSwitchTask;
                     return;
                 }
 

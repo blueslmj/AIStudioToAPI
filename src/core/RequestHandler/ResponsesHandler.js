@@ -184,18 +184,11 @@ class ResponsesHandler extends RetryHandler {
                         // Send standard HTTP error response
                         this._sendErrorResponse(res, initialMessage.status || 500, initialMessage.message);
 
-                        // Avoid switching account if the error is just a connection reset
-                        if (!skipFinalFailureSwitch && !this._isConnectionResetError(initialMessage)) {
-                            await this.authSwitcher.handleRequestFailureAndSwitch(initialMessage, null);
-                        } else if (skipFinalFailureSwitch) {
-                            this.logger.info(
-                                "[Request] Immediate-switch retries exhausted, skipping additional account switch."
-                            );
-                        } else {
-                            this.logger.info(
-                                "[Request] Failure due to connection reset (Real Stream), skipping account switch."
-                            );
-                        }
+                        const accountSwitchTask = this._handleFinalFailureAccountSwitch(initialMessage, {
+                            connectionResetContext: "Real Stream",
+                            skipAccountSwitch: skipFinalFailureSwitch,
+                        });
+                        if (accountSwitchTask) await accountSwitchTask;
                         return;
                     }
 
@@ -259,18 +252,10 @@ class ResponsesHandler extends RetryHandler {
                                 this._sendErrorResponse(res, result.error.status || 500, result.error.message);
                             }
 
-                            // Avoid switching account if the error is just a connection reset
-                            if (!result.error.skipAccountSwitch && !this._isConnectionResetError(result.error)) {
-                                await this.authSwitcher.handleRequestFailureAndSwitch(result.error, null);
-                            } else if (result.error.skipAccountSwitch) {
-                                this.logger.info(
-                                    "[Request] Immediate-switch retries exhausted, skipping additional account switch."
-                                );
-                            } else {
-                                this.logger.info(
-                                    "[Request] Failure due to connection reset (Response API), skipping account switch."
-                                );
-                            }
+                            const accountSwitchTask = this._handleFinalFailureAccountSwitch(result.error, {
+                                connectionResetContext: "Response API",
+                            });
+                            if (accountSwitchTask) await accountSwitchTask;
                             return;
                         }
 
@@ -490,15 +475,10 @@ class ResponsesHandler extends RetryHandler {
                     );
 
                     this._sendErrorResponse(res, response.status || 500, response.message);
-
-                    // Avoid switching account if the error is just a connection reset
-                    if (!this._isConnectionResetError(response)) {
-                        await this.authSwitcher.handleRequestFailureAndSwitch(response, null);
-                    } else {
-                        this.logger.info(
-                            "[Request] Failure due to connection reset (input_tokens), skipping account switch."
-                        );
-                    }
+                    const accountSwitchTask = this._handleFinalFailureAccountSwitch(response, {
+                        connectionResetContext: "input_tokens",
+                    });
+                    if (accountSwitchTask) await accountSwitchTask;
                     return;
                 }
 

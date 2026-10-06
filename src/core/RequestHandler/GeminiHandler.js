@@ -138,18 +138,10 @@ class GeminiHandler extends RetryHandler {
                         this._sendErrorResponse(res, result.error.status || 500, result.error.message);
                     }
 
-                    // Avoid switching account if the error is just a connection reset
-                    if (!result.error.skipAccountSwitch && !this._isConnectionResetError(result.error)) {
-                        await this.authSwitcher.handleRequestFailureAndSwitch(result.error, null);
-                    } else if (result.error.skipAccountSwitch) {
-                        this.logger.info(
-                            "[Request] Immediate-switch retries exhausted, skipping additional account switch."
-                        );
-                    } else {
-                        this.logger.info(
-                            "[Request] Failure due to connection reset (Gemini Non-Stream), skipping account switch."
-                        );
-                    }
+                    const accountSwitchTask = this._handleFinalFailureAccountSwitch(result.error, {
+                        connectionResetContext: "Gemini Non-Stream",
+                    });
+                    if (accountSwitchTask) await accountSwitchTask;
                 }
                 return;
             }
@@ -432,18 +424,11 @@ class GeminiHandler extends RetryHandler {
                 this._logFinalRequestFailure(headerMessage, "Gemini real stream", proxyRequest.request_id, {
                     afterRetries: false,
                 });
-                // Avoid switching account if the error is just a connection reset
-                if (!skipFinalFailureSwitch && !this._isConnectionResetError(headerMessage)) {
-                    await this.authSwitcher.handleRequestFailureAndSwitch(headerMessage, null);
-                } else if (skipFinalFailureSwitch) {
-                    this.logger.info(
-                        "[Request] Immediate-switch retries exhausted, skipping additional account switch."
-                    );
-                } else {
-                    this.logger.info(
-                        "[Request] Failure due to connection reset (Gemini Real Stream), skipping account switch."
-                    );
-                }
+                const accountSwitchTask = this._handleFinalFailureAccountSwitch(headerMessage, {
+                    connectionResetContext: "Gemini Real Stream",
+                    skipAccountSwitch: skipFinalFailureSwitch,
+                });
+                if (accountSwitchTask) await accountSwitchTask;
                 return this._sendErrorResponse(res, headerMessage.status, headerMessage.message);
             }
             if (!res.writableEnded) res.end();
@@ -539,18 +524,10 @@ class GeminiHandler extends RetryHandler {
                     this.logger.info(`[Request] Request #${proxyRequest.request_id} was properly cancelled by user.`);
                 } else {
                     this._logFinalRequestFailure(result.error, "Gemini non-stream", proxyRequest.request_id);
-                    // Avoid switching account if the error is just a connection reset
-                    if (!result.error.skipAccountSwitch && !this._isConnectionResetError(result.error)) {
-                        await this.authSwitcher.handleRequestFailureAndSwitch(result.error, null);
-                    } else if (result.error.skipAccountSwitch) {
-                        this.logger.info(
-                            "[Request] Immediate-switch retries exhausted, skipping additional account switch."
-                        );
-                    } else {
-                        this.logger.info(
-                            "[Request] Failure due to connection reset (Gemini Non-Stream), skipping account switch."
-                        );
-                    }
+                    const accountSwitchTask = this._handleFinalFailureAccountSwitch(result.error, {
+                        connectionResetContext: "Gemini Non-Stream",
+                    });
+                    if (accountSwitchTask) await accountSwitchTask;
                 }
                 return this._sendErrorResponse(res, result.error.status || 500, result.error.message);
             }

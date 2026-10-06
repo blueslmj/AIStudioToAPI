@@ -176,6 +176,29 @@ class RetryHandler extends ConnectionHandler {
         );
     }
 
+    /**
+     * Handle the final account-switch decision after a request failure.
+     * @param {object} errorDetails
+     * @param {{connectionResetContext?: string | null, skipAccountSwitch?: unknown}} [options]
+     * @returns {Promise<unknown> | null}
+     */
+    _handleFinalFailureAccountSwitch(
+        errorDetails,
+        { connectionResetContext = null, skipAccountSwitch = errorDetails?.skipAccountSwitch } = {}
+    ) {
+        if (!skipAccountSwitch && !this._isConnectionResetError(errorDetails)) {
+            return this.authSwitcher.handleRequestFailureAndSwitch(errorDetails, null);
+        } else if (skipAccountSwitch) {
+            this.logger.info("[Request] Immediate-switch retries exhausted, skipping additional account switch.");
+        } else if (connectionResetContext) {
+            this.logger.info(
+                `[Request] Failure due to connection reset (${connectionResetContext}), skipping account switch.`
+            );
+        }
+
+        return null;
+    }
+
     async _executeRequestWithRetries(proxyRequest, messageQueue) {
         let lastError = null;
         let currentQueue = messageQueue;
