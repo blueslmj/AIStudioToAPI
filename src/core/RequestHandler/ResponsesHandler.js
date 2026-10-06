@@ -77,7 +77,6 @@ class ResponsesHandler extends RetryHandler {
             const responseDefaults = Object.fromEntries(
                 Object.entries(responseDefaultsRaw).filter(([, v]) => v !== undefined)
             );
-            const systemStreamMode = this.config.streamingMode;
 
             // Handle usage counting
             const usageCount = this.authSwitcher.incrementUsageCount();
@@ -112,28 +111,13 @@ class ResponsesHandler extends RetryHandler {
                 );
             }
 
-            const effectiveStreamMode = modelStreamingMode || systemStreamMode;
-            const useRealStream = isOpenAIStream && effectiveStreamMode === "real";
-
-            const googleEndpoint = useRealStream ? "streamGenerateContent" : "generateContent";
-            const proxyRequest = {
-                body: JSON.stringify(googleBody),
-                headers: { "Content-Type": "application/json" },
-                is_generative: true,
-                method: "POST",
-                path: `/v1beta/models/${model}:${googleEndpoint}`,
-                query_params: useRealStream ? { alt: "sse" } : {},
-                request_id: requestId,
-                streaming_mode: useRealStream ? "real" : "fake",
-            };
-            this._initializeProxyRequestAttempt(proxyRequest);
-            res.__proxyResponseStreamMode = isOpenAIStream ? (useRealStream ? "real" : "fake") : null;
-            this._updateTrackedRequest(requestId, {
+            const { proxyRequest, useRealStream } = this._prepareGenerationProxyRequest({
+                googleBody,
                 isStreaming: isOpenAIStream,
                 model,
-                path: proxyRequest.path,
-                requestCategory: "generation",
-                ...(isOpenAIStream ? { streamMode: useRealStream ? "real" : "fake" } : {}),
+                modelStreamingMode,
+                requestId,
+                res,
             });
 
             try {

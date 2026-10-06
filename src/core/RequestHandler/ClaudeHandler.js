@@ -27,7 +27,6 @@ class ClaudeHandler extends RetryHandler {
             }
 
             const isClaudeStream = req.body.stream === true;
-            const systemStreamMode = this.config.streamingMode;
 
             // Handle usage counting
             const usageCount = this.authSwitcher.incrementUsageCount();
@@ -56,28 +55,13 @@ class ClaudeHandler extends RetryHandler {
                 return this._sendErrorResponse(res, 400, "Invalid Claude request format.", "invalid_request_error");
             }
 
-            const effectiveStreamMode = modelStreamingMode || systemStreamMode;
-            const useRealStream = isClaudeStream && effectiveStreamMode === "real";
-
-            const googleEndpoint = useRealStream ? "streamGenerateContent" : "generateContent";
-            const proxyRequest = {
-                body: JSON.stringify(googleBody),
-                headers: { "Content-Type": "application/json" },
-                is_generative: true,
-                method: "POST",
-                path: `/v1beta/models/${model}:${googleEndpoint}`,
-                query_params: useRealStream ? { alt: "sse" } : {},
-                request_id: requestId,
-                streaming_mode: useRealStream ? "real" : "fake",
-            };
-            this._initializeProxyRequestAttempt(proxyRequest);
-            res.__proxyResponseStreamMode = isClaudeStream ? (useRealStream ? "real" : "fake") : null;
-            this._updateTrackedRequest(requestId, {
+            const { proxyRequest, useRealStream } = this._prepareGenerationProxyRequest({
+                googleBody,
                 isStreaming: isClaudeStream,
                 model,
-                path: proxyRequest.path,
-                requestCategory: "generation",
-                ...(isClaudeStream ? { streamMode: useRealStream ? "real" : "fake" } : {}),
+                modelStreamingMode,
+                requestId,
+                res,
             });
 
             try {

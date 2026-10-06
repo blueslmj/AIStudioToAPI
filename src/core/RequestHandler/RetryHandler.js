@@ -10,6 +10,35 @@ const { isUserAbortedError } = require("../../utils/CustomErrors");
 const { QueueTimeoutError } = require("../../utils/MessageQueue");
 
 class RetryHandler extends ConnectionHandler {
+    _prepareGenerationProxyRequest({ googleBody, isStreaming, model, modelStreamingMode, requestId, res }) {
+        const effectiveStreamMode = modelStreamingMode || this.config.streamingMode;
+        const useRealStream = isStreaming && effectiveStreamMode === "real";
+        const streamMode = useRealStream ? "real" : "fake";
+        const googleEndpoint = useRealStream ? "streamGenerateContent" : "generateContent";
+        const proxyRequest = {
+            body: JSON.stringify(googleBody),
+            headers: { "Content-Type": "application/json" },
+            is_generative: true,
+            method: "POST",
+            path: `/v1beta/models/${model}:${googleEndpoint}`,
+            query_params: useRealStream ? { alt: "sse" } : {},
+            request_id: requestId,
+            streaming_mode: streamMode,
+        };
+
+        this._initializeProxyRequestAttempt(proxyRequest);
+        res.__proxyResponseStreamMode = isStreaming ? streamMode : null;
+        this._updateTrackedRequest(requestId, {
+            isStreaming,
+            model,
+            path: proxyRequest.path,
+            requestCategory: "generation",
+            ...(isStreaming ? { streamMode } : {}),
+        });
+
+        return { proxyRequest, useRealStream };
+    }
+
     _createImmediateSwitchTracker(initialAuthIndex = this.currentAuthIndex) {
         const attemptedAuthIndices = new Set();
         if (Number.isInteger(initialAuthIndex) && initialAuthIndex >= 0) {
