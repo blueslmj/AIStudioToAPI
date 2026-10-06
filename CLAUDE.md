@@ -90,10 +90,15 @@ The system follows a modular architecture with clear separation of concerns:
   - Immediate status codes (IMMEDIATE_SWITCH_STATUS_CODES: 429, 503)
 - Manages system busy state during switches
 
-**FormatConverter** (`src/core/FormatConverter.js`)
+**FormatConverter** (`src/core/FormatConverter/index.js`)
 
 - Converts between API formats (OpenAI ↔ Gemini ↔ Anthropic)
 - Handles streaming and non-streaming responses
+- Keeps the existing `require("./FormatConverter")` entry point and shared converter instance
+- `CommonConverter.js`: shared context, model suffixes, Gemini tools/schemas, media loading, and usage parsing
+- `ChatCompletionsConverter.js` and `EmbeddingsConverter.js`: OpenAI Chat Completions and Embeddings
+- `ClaudeRequestConverter.js` and `ClaudeResponseConverter.js`: Anthropic Messages requests and responses
+- `ResponsesRequestConverter.js`, `ResponsesStreamConverter.js`, and `ResponsesOutputConverter.js`: OpenAI Responses requests, SSE events, and output helpers
 
 **AuthSource** (`src/auth/AuthSource.js`)
 
