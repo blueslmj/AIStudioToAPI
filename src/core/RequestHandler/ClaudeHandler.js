@@ -100,31 +100,19 @@ class ClaudeHandler extends RetryHandler {
                             this.logger.warn(
                                 `[Request] Claude real stream received ${initialStatus}, preparing retry...`
                             );
-                            this._cancelCurrentAttemptBeforeRetry(proxyRequest, currentQueueAuthIndex);
-
-                            const retryPrepared = await this._prepareImmediateStatusRetry(
+                            const retryState = await this._prepareRealStreamImmediateRetry(
+                                proxyRequest,
+                                currentQueue,
                                 initialMessage,
-                                requestId,
                                 immediateSwitchTracker,
                                 currentQueueAuthIndex
                             );
-                            if (!retryPrepared) {
+                            if (!retryState) {
                                 skipFinalFailureSwitch = true;
                                 break;
                             }
 
-                            try {
-                                currentQueue.close(this._getImmediateStatusRetryCloseReason(initialStatus));
-                            } catch {
-                                /* empty */
-                            }
-                            this._advanceProxyRequestAttempt(proxyRequest);
-                            currentQueue = this.connectionRegistry.createMessageQueue(
-                                requestId,
-                                this.currentAuthIndex,
-                                proxyRequest.request_attempt_id
-                            );
-                            currentQueueAuthIndex = this.currentAuthIndex;
+                            ({ currentQueue, currentQueueAuthIndex } = retryState);
                             continue;
                         }
 

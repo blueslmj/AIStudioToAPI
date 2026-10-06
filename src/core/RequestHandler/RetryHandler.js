@@ -51,6 +51,44 @@ class RetryHandler extends ConnectionHandler {
         return `immediate_status_retry_${status}`;
     }
 
+    async _prepareRealStreamImmediateRetry(
+        proxyRequest,
+        currentQueue,
+        errorDetails,
+        immediateSwitchTracker,
+        currentQueueAuthIndex
+    ) {
+        this._cancelCurrentAttemptBeforeRetry(proxyRequest, currentQueueAuthIndex);
+
+        const retryPrepared = await this._prepareImmediateStatusRetry(
+            errorDetails,
+            proxyRequest.request_id,
+            immediateSwitchTracker,
+            currentQueueAuthIndex
+        );
+        if (!retryPrepared) return null;
+
+        const errorStatus = Number(errorDetails?.status);
+        try {
+            currentQueue.close(this._getImmediateStatusRetryCloseReason(errorStatus));
+        } catch {
+            /* empty */
+        }
+
+        this._advanceProxyRequestAttempt(proxyRequest);
+        const nextQueueAuthIndex = this.currentAuthIndex;
+        const nextQueue = this.connectionRegistry.createMessageQueue(
+            proxyRequest.request_id,
+            nextQueueAuthIndex,
+            proxyRequest.request_attempt_id
+        );
+
+        return {
+            currentQueue: nextQueue,
+            currentQueueAuthIndex: nextQueueAuthIndex,
+        };
+    }
+
     async _performImmediateSwitchRetry(errorDetails, requestId, tracker) {
         await this.authSwitcher.handleRequestFailureAndSwitch(
             { message: errorDetails.message, status: Number(errorDetails.status) },

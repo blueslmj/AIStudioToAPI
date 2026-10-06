@@ -413,32 +413,19 @@ class GeminiHandler extends RetryHandler {
                 this.config?.immediateSwitchStatusCodes?.includes(headerStatus)
             ) {
                 this.logger.warn(`[Request] Gemini real stream received ${headerStatus}, preparing retry...`);
-                this._cancelCurrentAttemptBeforeRetry(proxyRequest, currentQueueAuthIndex);
-
-                const retryPrepared = await this._prepareImmediateStatusRetry(
+                const retryState = await this._prepareRealStreamImmediateRetry(
+                    proxyRequest,
+                    currentQueue,
                     headerMessage,
-                    proxyRequest.request_id,
                     immediateSwitchTracker,
                     currentQueueAuthIndex
                 );
-                if (!retryPrepared) {
+                if (!retryState) {
                     skipFinalFailureSwitch = true;
                     break;
                 }
 
-                try {
-                    currentQueue.close(this._getImmediateStatusRetryCloseReason(headerStatus));
-                } catch {
-                    /* empty */
-                }
-
-                this._advanceProxyRequestAttempt(proxyRequest);
-                currentQueue = this.connectionRegistry.createMessageQueue(
-                    proxyRequest.request_id,
-                    this.currentAuthIndex,
-                    proxyRequest.request_attempt_id
-                );
-                currentQueueAuthIndex = this.currentAuthIndex;
+                ({ currentQueue, currentQueueAuthIndex } = retryState);
                 continue;
             }
 
