@@ -10,6 +10,29 @@ const { isUserAbortedError } = require("../../utils/CustomErrors");
 const { QueueTimeoutError } = require("../../utils/MessageQueue");
 
 class RetryHandler extends ConnectionHandler {
+    /**
+     * Start recursively scheduled SSE keep-alive writes.
+     * @param {object} res
+     * @param {string} frame
+     * @param {() => void} initializeResponse
+     * @param {(timer: ReturnType<typeof setTimeout>) => void} updateTimer
+     */
+    _startSseKeepAlive(res, frame, initializeResponse, updateTimer) {
+        const scheduleNextKeepAlive = () => {
+            const randomInterval = 12000 + Math.floor(Math.random() * 6000);
+            const timer = setTimeout(() => {
+                if (!res.headersSent) initializeResponse();
+                if (!res.writableEnded) {
+                    res.write(frame);
+                    scheduleNextKeepAlive();
+                }
+            }, randomInterval);
+            updateTimer(timer);
+        };
+
+        scheduleNextKeepAlive();
+    }
+
     _prepareGenerationProxyRequest({ googleBody, isStreaming, model, modelStreamingMode, requestId, res }) {
         const effectiveStreamMode = modelStreamingMode || this.config.streamingMode;
         const useRealStream = isStreaming && effectiveStreamMode === "real";

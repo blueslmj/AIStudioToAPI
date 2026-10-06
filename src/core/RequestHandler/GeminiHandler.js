@@ -103,21 +103,18 @@ class GeminiHandler extends RetryHandler {
         }
 
         let connectionMaintainer;
-        const scheduleNextKeepAlive = () => {
-            const randomInterval = 12000 + Math.floor(Math.random() * 6000); // 12 - 18 seconds
-            connectionMaintainer = setTimeout(() => {
-                if (!res.headersSent) {
-                    res.setHeader("Content-Type", "text/event-stream");
-                    res.setHeader("Cache-Control", "no-cache");
-                    res.setHeader("Connection", "keep-alive");
-                }
-                if (!res.writableEnded) {
-                    res.write(": keep-alive\n\n");
-                    scheduleNextKeepAlive();
-                }
-            }, randomInterval);
-        };
-        scheduleNextKeepAlive();
+        this._startSseKeepAlive(
+            res,
+            ": keep-alive\n\n",
+            () => {
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+            },
+            timer => {
+                connectionMaintainer = timer;
+            }
+        );
 
         try {
             const result = await this._executeRequestWithRetries(proxyRequest, messageQueue);

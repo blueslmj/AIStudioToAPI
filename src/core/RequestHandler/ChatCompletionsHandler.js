@@ -155,23 +155,20 @@ class ChatCompletionsHandler extends RetryHandler {
                     // Set up keep-alive timer for fake stream mode to prevent client timeout
                     let connectionMaintainer;
                     if (isOpenAIStream) {
-                        const scheduleNextKeepAlive = () => {
-                            const randomInterval = 12000 + Math.floor(Math.random() * 6000); // 12 - 18 seconds
-                            connectionMaintainer = setTimeout(() => {
-                                if (!res.headersSent) {
-                                    res.status(200).set({
-                                        "Cache-Control": "no-cache",
-                                        Connection: "keep-alive",
-                                        "Content-Type": "text/event-stream",
-                                    });
-                                }
-                                if (!res.writableEnded) {
-                                    res.write(": keep-alive\n\n");
-                                    scheduleNextKeepAlive();
-                                }
-                            }, randomInterval);
-                        };
-                        scheduleNextKeepAlive();
+                        this._startSseKeepAlive(
+                            res,
+                            ": keep-alive\n\n",
+                            () => {
+                                res.status(200).set({
+                                    "Cache-Control": "no-cache",
+                                    Connection: "keep-alive",
+                                    "Content-Type": "text/event-stream",
+                                });
+                            },
+                            timer => {
+                                connectionMaintainer = timer;
+                            }
+                        );
                     }
 
                     try {

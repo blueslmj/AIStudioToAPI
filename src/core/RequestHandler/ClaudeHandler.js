@@ -148,23 +148,20 @@ class ClaudeHandler extends RetryHandler {
                     // Claude Fake Stream / Non-Stream mode
                     let connectionMaintainer;
                     if (isClaudeStream) {
-                        const scheduleNextKeepAlive = () => {
-                            const randomInterval = 12000 + Math.floor(Math.random() * 6000);
-                            connectionMaintainer = setTimeout(() => {
-                                if (!res.headersSent) {
-                                    res.status(200).set({
-                                        "Cache-Control": "no-cache",
-                                        Connection: "keep-alive",
-                                        "Content-Type": "text/event-stream",
-                                    });
-                                }
-                                if (!res.writableEnded) {
-                                    res.write("event: ping\ndata: {}\n\n");
-                                    scheduleNextKeepAlive();
-                                }
-                            }, randomInterval);
-                        };
-                        scheduleNextKeepAlive();
+                        this._startSseKeepAlive(
+                            res,
+                            "event: ping\ndata: {}\n\n",
+                            () => {
+                                res.status(200).set({
+                                    "Cache-Control": "no-cache",
+                                    Connection: "keep-alive",
+                                    "Content-Type": "text/event-stream",
+                                });
+                            },
+                            timer => {
+                                connectionMaintainer = timer;
+                            }
+                        );
                     }
 
                     try {
