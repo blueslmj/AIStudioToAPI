@@ -46,7 +46,7 @@ class ResponsesRequestConverter extends FormatConverter {
      * @param {Array<object>} tools - Responses API tools
      * @returns {{
      *   functionDeclarations: Array<object>,
-     *   functionNameMap: Record<string, {name: string, namespace: string}>,
+     *   functionNameMap: Record<string, {name: string, namespace?: string, type?: string}>,
      *   namespaceAliasMap: Record<string, string>,
      *   namespaceFunctionCount: number
      * }} Flattened declarations and reversible name mappings
@@ -206,7 +206,12 @@ class ResponsesRequestConverter extends FormatConverter {
      * Convert OpenAI Response API request format to Google Gemini format
      * Response API uses different structure: input instead of messages, instructions instead of system message
      * @param {object} responseBody - OpenAI Response API format request body
-     * @returns {Promise<{ googleRequest: object, cleanModelName: string, modelStreamingMode: ("real"|"fake"|null) }>}
+     * @returns {Promise<{
+     *   googleRequest: object,
+     *   cleanModelName: string,
+     *   modelStreamingMode: ("real"|"fake"|null),
+     *   responseFunctionNameMap: Record<string, {name: string, namespace?: string, type?: string}>
+     * }>}
      *          - modelStreamingMode: Streaming mode override parsed from model name suffix, or null
      */
     async translateOpenAIResponseToGoogle(responseBody) {

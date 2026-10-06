@@ -15,7 +15,7 @@ class RetryHandler extends ConnectionHandler {
      * @param {object} res
      * @param {string} frame
      * @param {() => void} initializeResponse
-     * @param {(timer: ReturnType<typeof setTimeout>) => void} updateTimer
+     * @param {(timer: any) => void} updateTimer
      */
     _startSseKeepAlive(res, frame, initializeResponse, updateTimer) {
         const scheduleNextKeepAlive = () => {

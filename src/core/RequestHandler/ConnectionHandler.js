@@ -183,7 +183,7 @@ class ConnectionHandler extends ErrorHandler {
      * - Switch to next account (recoveryAuthIndex = -1): Let switchToNextAuth() manage isSystemBusy internally
      * - This prevents the bug where isSystemBusy is set here, then switchToNextAuth() checks it and returns "already in progress"
      *
-     * @returns {boolean} true if recovery successful, false otherwise
+     * @returns {Promise<boolean>} true if recovery successful, false otherwise
      */
     async _handleBrowserRecovery(res) {
         // If within grace period or lightweight reconnect is running, wait up to 130s for WebSocket reconnection
@@ -252,7 +252,7 @@ class ConnectionHandler extends ErrorHandler {
                 const result = await this.authSwitcher.switchToNextAuth();
                 if (!result.success) {
                     this.logger.error(`❌ [System] Failed to switch to available account: ${result.reason}`);
-                    await this._sendErrorResponse(res, 503, `Service temporarily unavailable: ${result.reason}`);
+                    this._sendErrorResponse(res, 503, `Service temporarily unavailable: ${result.reason}`);
                     recoverySuccess = false;
                 } else {
                     this.logger.info(`✅ [System] Successfully recovered to account #${result.newIndex}!`);
@@ -268,7 +268,7 @@ class ConnectionHandler extends ErrorHandler {
                 }
             } else {
                 this.logger.error("❌ [System] No available accounts for recovery.");
-                await this._sendErrorResponse(res, 503, "Service temporarily unavailable: No available accounts.");
+                this._sendErrorResponse(res, 503, "Service temporarily unavailable: No available accounts.");
                 recoverySuccess = false;
             }
         } catch (error) {
@@ -283,7 +283,7 @@ class ConnectionHandler extends ErrorHandler {
                     const result = await this.authSwitcher.switchToNextAuth();
                     if (!result.success) {
                         this.logger.error(`❌ [System] Failed to switch to alternative account: ${result.reason}`);
-                        await this._sendErrorResponse(res, 503, `Service temporarily unavailable: ${result.reason}`);
+                        this._sendErrorResponse(res, 503, `Service temporarily unavailable: ${result.reason}`);
                         recoverySuccess = false;
                     } else {
                         this.logger.info(
@@ -301,11 +301,11 @@ class ConnectionHandler extends ErrorHandler {
                     }
                 } catch (switchError) {
                     this.logger.error(`❌ [System] All accounts failed: ${switchError.message}`);
-                    await this._sendErrorResponse(res, 503, "Service temporarily unavailable: All accounts failed.");
+                    this._sendErrorResponse(res, 503, "Service temporarily unavailable: All accounts failed.");
                     recoverySuccess = false;
                 }
             } else {
-                await this._sendErrorResponse(
+                this._sendErrorResponse(
                     res,
                     503,
                     "Service temporarily unavailable: Browser crashed and cannot auto-recover."
