@@ -4191,39 +4191,19 @@ class RequestHandler {
             const pathSuffix = modelPathMatch[3];
 
             const {
-                cleanModelName: toolStrippedModel,
+                cleanModelName,
                 forceCodeExecution: parsedForceCodeExecution,
                 forceWebSearch: parsedForceWebSearch,
-            } = FormatConverter.parseModelBuiltInToolSuffixes(rawModelName);
-            const { cleanModelName: streamStrippedModel, streamingMode: parsedStreamingMode } =
-                FormatConverter.parseModelStreamingModeSuffix(toolStrippedModel);
-            const { cleanModelName, thinkingLevel: parsedThinkingLevel } =
-                FormatConverter.parseModelThinkingLevel(streamStrippedModel);
+                streamingMode: parsedStreamingMode,
+                thinkingLevel: parsedThinkingLevel,
+            } = this.formatConverter.parseModelSuffixes(rawModelName, {
+                logPrefix: "[Proxy]",
+                modelSource: "model path",
+            });
             modelForceCodeExecution = parsedForceCodeExecution;
             modelForceWebSearch = parsedForceWebSearch;
             modelStreamingMode = parsedStreamingMode;
             modelThinkingLevel = parsedThinkingLevel;
-
-            const modelForceToolFlags = [];
-            if (modelForceWebSearch) modelForceToolFlags.push("forceWebSearch=true");
-            if (modelForceCodeExecution) modelForceToolFlags.push("forceCodeExecution=true");
-            if (modelForceToolFlags.length > 0) {
-                this.logger.info(
-                    `[Proxy] Detected built-in tool suffixes in model path: "${rawModelName}" -> model="${toolStrippedModel}", ${modelForceToolFlags.join(", ")}`
-                );
-            }
-
-            if (modelStreamingMode) {
-                this.logger.info(
-                    `[Proxy] Detected streamingMode suffix in model path: "${toolStrippedModel}" -> model="${streamStrippedModel}", streamingMode="${modelStreamingMode}"`
-                );
-            }
-
-            if (modelThinkingLevel) {
-                this.logger.info(
-                    `[Proxy] Detected thinkingLevel suffix in model path: "${streamStrippedModel}" -> model="${cleanModelName}", thinkingLevel="${modelThinkingLevel}"`
-                );
-            }
 
             // Always strip recognized directives from path model name
             if (cleanModelName !== rawModelName) {

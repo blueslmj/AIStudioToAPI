@@ -216,40 +216,14 @@ class ResponsesRequestConverter extends FormatConverter {
             `[Adapter] Debug: incoming OpenAI Response API Body = ${JSON.stringify(responseBody, null, 2)}`
         );
 
-        // Parse model suffixes in reverse stripping order:
-        // 1) built-in tool overrides: trailing `-search` / `-code`
-        // 2) streaming override: trailing `-real` / `-fake` after any thinking suffix
-        // 3) thinkingLevel override: trailing `-minimal` / `(minimal)` etc.
-        // Combined user-facing suffix order: thinking -> streaming -> built-in tools
         const rawModel = responseBody.model || "gemini-flash-lite-latest";
         const {
-            cleanModelName: toolStrippedModel,
+            cleanModelName,
             forceCodeExecution: modelForceCodeExecution,
             forceWebSearch: modelForceWebSearch,
-        } = FormatConverter.parseModelBuiltInToolSuffixes(rawModel);
-        const { cleanModelName: streamStrippedModel, streamingMode: modelStreamingMode } =
-            FormatConverter.parseModelStreamingModeSuffix(toolStrippedModel);
-        const { cleanModelName, thinkingLevel: modelThinkingLevel } =
-            FormatConverter.parseModelThinkingLevel(streamStrippedModel);
-
-        const modelForceToolFlags = [];
-        if (modelForceWebSearch) modelForceToolFlags.push("forceWebSearch=true");
-        if (modelForceCodeExecution) modelForceToolFlags.push("forceCodeExecution=true");
-        if (modelForceToolFlags.length > 0) {
-            this.logger.info(
-                `[Adapter] Detected built-in tool suffixes in model name: "${rawModel}" -> model="${toolStrippedModel}", ${modelForceToolFlags.join(", ")}`
-            );
-        }
-        if (modelStreamingMode) {
-            this.logger.info(
-                `[Adapter] Detected streamingMode suffix in model name: "${toolStrippedModel}" -> model="${streamStrippedModel}", streamingMode="${modelStreamingMode}"`
-            );
-        }
-        if (modelThinkingLevel) {
-            this.logger.info(
-                `[Adapter] Detected thinkingLevel suffix in model name: "${streamStrippedModel}" -> model="${cleanModelName}", thinkingLevel="${modelThinkingLevel}"`
-            );
-        }
+            streamingMode: modelStreamingMode,
+            thinkingLevel: modelThinkingLevel,
+        } = this.parseModelSuffixes(rawModel);
 
         const toolChoice = responseBody.tool_choice;
 
@@ -533,23 +507,11 @@ class ResponsesRequestConverter extends FormatConverter {
 
             // Keep assistant messages, reasoning and tool calls in the same model turn.
             // The function_call_output items answering them form the following user turn.
-            let pendingModelParts = [];
-            let pendingFunctionResponseParts = [];
+            const pendingModelParts = this._createGoogleContentPartsBuffer(googleContents, "model");
+            const pendingFunctionResponseParts = this._createGoogleContentPartsBuffer(googleContents, "user");
             const flushToolTurns = () => {
-                if (pendingModelParts.length > 0) {
-                    googleContents.push({
-                        parts: pendingModelParts,
-                        role: "model",
-                    });
-                    pendingModelParts = [];
-                }
-                if (pendingFunctionResponseParts.length > 0) {
-                    googleContents.push({
-                        parts: pendingFunctionResponseParts,
-                        role: "user",
-                    });
-                    pendingFunctionResponseParts = [];
-                }
+                pendingModelParts.flush();
+                pendingFunctionResponseParts.flush();
             };
 
             for (const item of input) {
@@ -648,13 +610,7 @@ class ResponsesRequestConverter extends FormatConverter {
                         // Function output (tool result from user). Responses must live in the
                         // user turn directly following the model turn with the calls, so close
                         // the pending model turn first and keep accumulating outputs.
-                        if (pendingModelParts.length > 0) {
-                            googleContents.push({
-                                parts: pendingModelParts,
-                                role: "model",
-                            });
-                            pendingModelParts = [];
-                        }
+                        pendingModelParts.flush();
                         const responseMeta = functionResponseMetaByItem.get(item) || {
                             id: undefined,
                             name: "unknown_function",

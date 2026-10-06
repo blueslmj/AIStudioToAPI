@@ -827,9 +827,9 @@ class ResponsesStreamConverter extends ResponsesOutputConverter {
                         streamState.urlContextUrls.length === 0) ||
                     streamState.webSearchCallOrder.length > 0
                 ) {
-                    let searchCall = findWebSearchCall();
+                    const searchCall = findWebSearchCall();
                     if (!searchCall) {
-                        searchCall = ensureWebSearchCall(null, grounding.queries);
+                        ensureWebSearchCall(null, grounding.queries);
                     } else if (
                         searchCall.status !== "completed" &&
                         (searchCall.action.queries || []).length === 0 &&

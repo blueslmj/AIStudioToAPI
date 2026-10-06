@@ -170,9 +170,95 @@ class FormatConverter {
         return { cleanModelName: modelName, thinkingLevel: null };
     }
 
+    /**
+     * Parse all supported model-name suffixes in their required stripping order
+     * and log any detected overrides.
+     *
+     * @param {string} modelName - Original model name
+     * @param {{ logPrefix?: string, modelSource?: string }} [options] - Log message context
+     * @returns {{
+     *   cleanModelName: string,
+     *   forceCodeExecution: boolean,
+     *   forceWebSearch: boolean,
+     *   streamingMode: ("real"|"fake"|null),
+     *   thinkingLevel: string|null
+     * }} Parsed model name and overrides
+     */
+    parseModelSuffixes(modelName, { logPrefix = "[Adapter]", modelSource = "model name" } = {}) {
+        const {
+            cleanModelName: toolStrippedModel,
+            forceCodeExecution,
+            forceWebSearch,
+        } = FormatConverter.parseModelBuiltInToolSuffixes(modelName);
+        const { cleanModelName: streamStrippedModel, streamingMode } =
+            FormatConverter.parseModelStreamingModeSuffix(toolStrippedModel);
+        const { cleanModelName, thinkingLevel } = FormatConverter.parseModelThinkingLevel(streamStrippedModel);
+
+        const forceToolFlags = [];
+        if (forceWebSearch) forceToolFlags.push("forceWebSearch=true");
+        if (forceCodeExecution) forceToolFlags.push("forceCodeExecution=true");
+        if (forceToolFlags.length > 0) {
+            this.logger.info(
+                `${logPrefix} Detected built-in tool suffixes in ${modelSource}: "${modelName}" -> model="${toolStrippedModel}", ${forceToolFlags.join(", ")}`
+            );
+        }
+        if (streamingMode) {
+            this.logger.info(
+                `${logPrefix} Detected streamingMode suffix in ${modelSource}: "${toolStrippedModel}" -> model="${streamStrippedModel}", streamingMode="${streamingMode}"`
+            );
+        }
+        if (thinkingLevel) {
+            this.logger.info(
+                `${logPrefix} Detected thinkingLevel suffix in ${modelSource}: "${streamStrippedModel}" -> model="${cleanModelName}", thinkingLevel="${thinkingLevel}"`
+            );
+        }
+
+        return {
+            cleanModelName,
+            forceCodeExecution,
+            forceWebSearch,
+            streamingMode,
+            thinkingLevel,
+        };
+    }
+
     constructor(logger, serverSystem) {
         this.logger = logger;
         this.serverSystem = serverSystem;
+    }
+
+    /**
+     * Accumulate Gemini content parts for one role and append them as a single
+     * content turn when flushed.
+     *
+     * @param {Array<object>} contents - Target Gemini contents array
+     * @param {"model"|"user"} role - Role assigned to flushed content
+     * @returns {{
+     *   readonly length: number,
+     *   flush: () => void,
+     *   push: (...parts: object[]) => number,
+     *   some: (predicate: (part: object) => boolean) => boolean
+     * }} Mutable content-parts buffer
+     * @private
+     */
+    _createGoogleContentPartsBuffer(contents, role) {
+        let parts = [];
+        return {
+            flush() {
+                if (parts.length === 0) return;
+                contents.push({ parts, role });
+                parts = [];
+            },
+            get length() {
+                return parts.length;
+            },
+            push(...newParts) {
+                return parts.push(...newParts);
+            },
+            some(predicate) {
+                return parts.some(predicate);
+            },
+        };
     }
 
     getDefaultSafetySettings() {

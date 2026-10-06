@@ -22,40 +22,14 @@ class ChatCompletionsConverter extends FormatConverter {
         // [DEBUG] Log incoming messages for troubleshooting
         this.logger.debug(`[Adapter] Debug: incoming OpenAI Body = ${JSON.stringify(openaiBody, null, 2)}`);
 
-        // Parse model suffixes in reverse stripping order:
-        // 1) built-in tool overrides: trailing `-search` / `-code`
-        // 2) streaming override: trailing `-real` / `-fake` after any thinking suffix
-        // 3) thinkingLevel override: trailing `-minimal` / `(minimal)` etc.
-        // Combined user-facing suffix order: thinking -> streaming -> built-in tools
         const rawModel = openaiBody.model || "gemini-flash-lite-latest";
         const {
-            cleanModelName: toolStrippedModel,
+            cleanModelName,
             forceCodeExecution: modelForceCodeExecution,
             forceWebSearch: modelForceWebSearch,
-        } = FormatConverter.parseModelBuiltInToolSuffixes(rawModel);
-        const { cleanModelName: streamStrippedModel, streamingMode: modelStreamingMode } =
-            FormatConverter.parseModelStreamingModeSuffix(toolStrippedModel);
-        const { cleanModelName, thinkingLevel: modelThinkingLevel } =
-            FormatConverter.parseModelThinkingLevel(streamStrippedModel);
-
-        const modelForceToolFlags = [];
-        if (modelForceWebSearch) modelForceToolFlags.push("forceWebSearch=true");
-        if (modelForceCodeExecution) modelForceToolFlags.push("forceCodeExecution=true");
-        if (modelForceToolFlags.length > 0) {
-            this.logger.info(
-                `[Adapter] Detected built-in tool suffixes in model name: "${rawModel}" -> model="${toolStrippedModel}", ${modelForceToolFlags.join(", ")}`
-            );
-        }
-        if (modelStreamingMode) {
-            this.logger.info(
-                `[Adapter] Detected streamingMode suffix in model name: "${toolStrippedModel}" -> model="${streamStrippedModel}", streamingMode="${modelStreamingMode}"`
-            );
-        }
-        if (modelThinkingLevel) {
-            this.logger.info(
-                `[Adapter] Detected thinkingLevel suffix in model name: "${streamStrippedModel}" -> model="${cleanModelName}", thinkingLevel="${modelThinkingLevel}"`
-            );
-        }
+            streamingMode: modelStreamingMode,
+            thinkingLevel: modelThinkingLevel,
+        } = this.parseModelSuffixes(rawModel);
 
         let systemInstruction = null;
         const googleContents = [];
@@ -91,32 +65,14 @@ class ChatCompletionsConverter extends FormatConverter {
 
         // Buffer for accumulating consecutive tool message parts
         // Gemini requires alternating roles, so consecutive tool messages must be merged
-        let pendingToolParts = [];
-
-        let pendingModelParts = [];
-        const flushModelParts = () => {
-            if (pendingModelParts.length > 0) {
-                googleContents.push({ parts: pendingModelParts, role: "model" });
-                pendingModelParts = [];
-            }
-        };
-
-        // Helper function to flush pending tool parts as a single user message
-        // Note: functionResponse does NOT need thoughtSignature per official docs
-        const flushToolParts = () => {
-            if (pendingToolParts.length > 0) {
-                googleContents.push({
-                    parts: pendingToolParts,
-                    role: "user", // Gemini expects function responses as "user" role
-                });
-                pendingToolParts = [];
-            }
-        };
+        // functionResponse parts use the "user" role and do not need thoughtSignature.
+        const pendingToolParts = this._createGoogleContentPartsBuffer(googleContents, "user");
+        const pendingModelParts = this._createGoogleContentPartsBuffer(googleContents, "model");
 
         for (let msgIndex = 0; msgIndex < conversationMessages.length; msgIndex++) {
             const message = conversationMessages[msgIndex];
             const googleParts = [];
-            if (message.role !== "assistant") flushModelParts();
+            if (message.role !== "assistant") pendingModelParts.flush();
 
             // Handle tool role (function execution result)
             if (message.role === "tool") {
@@ -209,7 +165,7 @@ class ChatCompletionsConverter extends FormatConverter {
             }
 
             // Before processing non-tool messages, flush any pending tool parts
-            flushToolParts();
+            pendingToolParts.flush();
 
             // Handle assistant messages with tool_calls
             if (message.role === "assistant" && message.tool_calls && Array.isArray(message.tool_calls)) {
@@ -334,8 +290,8 @@ class ChatCompletionsConverter extends FormatConverter {
         }
 
         // Flush any remaining tool parts after the loop
-        flushModelParts();
-        flushToolParts();
+        pendingModelParts.flush();
+        pendingToolParts.flush();
 
         // Build Google request
         const googleRequest = {
