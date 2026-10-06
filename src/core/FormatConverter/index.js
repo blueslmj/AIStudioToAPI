@@ -10,8 +10,8 @@ const EmbeddingsConverter = require("./EmbeddingsConverter");
 const ClaudeRequestConverter = require("./ClaudeRequestConverter");
 const ClaudeResponseConverter = require("./ClaudeResponseConverter");
 const ResponsesRequestConverter = require("./ResponsesRequestConverter");
-const ResponsesStreamConverter = require("./ResponsesStreamConverter");
-const ResponsesOutputConverter = require("./ResponsesOutputConverter");
+const ResponsesNonStreamResponseConverter = require("./ResponsesNonStreamResponseConverter");
+const ResponsesStreamResponseConverter = require("./ResponsesStreamResponseConverter");
 
 for (const Converter of [
     ChatCompletionsConverter,
@@ -19,8 +19,8 @@ for (const Converter of [
     ClaudeRequestConverter,
     ClaudeResponseConverter,
     ResponsesRequestConverter,
-    ResponsesStreamConverter,
-    ResponsesOutputConverter,
+    ResponsesNonStreamResponseConverter,
+    ResponsesStreamResponseConverter,
 ]) {
     const methods = Object.getOwnPropertyDescriptors(Converter.prototype);
     delete methods.constructor;

@@ -96,11 +96,11 @@ The system follows a modular architecture with clear separation of concerns:
 - Handles streaming and non-streaming responses
 - Keeps the existing `require("./FormatConverter")` entry point and shared converter instance
 - `RequestHandler.formatConverter` has a JSDoc intersection type combining the API modules for IDE method resolution without listing individual methods
-- API module classes extend the shared converter; `ResponsesStreamConverter` extends `ResponsesOutputConverter` to resolve cross-module helper calls in the IDE. Runtime composition still copies only each module's own methods onto the shared instance's prototype.
+- API module classes extend the shared converter; `ResponsesStreamResponseConverter` extends `ResponsesNonStreamResponseConverter` to resolve cross-module helper calls in the IDE. Runtime composition still copies only each module's own methods onto the shared instance's prototype.
 - `CommonConverter.js`: shared context, model suffixes, Gemini tools/schemas, media loading, and usage parsing
 - `ChatCompletionsConverter.js` and `EmbeddingsConverter.js`: OpenAI Chat Completions and Embeddings
 - `ClaudeRequestConverter.js` and `ClaudeResponseConverter.js`: Anthropic Messages requests and responses
-- `ResponsesRequestConverter.js`, `ResponsesStreamConverter.js`, and `ResponsesOutputConverter.js`: OpenAI Responses requests, SSE events, and output helpers
+- `ResponsesRequestConverter.js`, `ResponsesStreamResponseConverter.js`, and `ResponsesNonStreamResponseConverter.js`: OpenAI Responses requests, streaming responses, and non-streaming responses
 
 **AuthSource** (`src/auth/AuthSource.js`)
 

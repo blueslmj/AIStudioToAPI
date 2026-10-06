@@ -1,13 +1,13 @@
 /**
- * File: src/core/FormatConverter/ResponsesOutputConverter.js
- * Description: OpenAI Responses non-streaming output and output helpers shared with SSE conversion.
+ * File: src/core/FormatConverter/ResponsesNonStreamResponseConverter.js
+ * Description: OpenAI Responses non-streaming response conversion and helpers shared with SSE conversion.
  *
  * Author: Ellinav, iBenzene, bbbugg
  */
 
 const FormatConverter = require("./CommonConverter");
 
-class ResponsesOutputConverter extends FormatConverter {
+class ResponsesNonStreamResponseConverter extends FormatConverter {
     _resolveResponseFunctionIdentity(name, functionNameMap) {
         if (functionNameMap && Object.prototype.hasOwnProperty.call(functionNameMap, name)) {
             return functionNameMap[name] || { name };
@@ -504,4 +504,4 @@ class ResponsesOutputConverter extends FormatConverter {
     }
 }
 
-module.exports = ResponsesOutputConverter;
+module.exports = ResponsesNonStreamResponseConverter;

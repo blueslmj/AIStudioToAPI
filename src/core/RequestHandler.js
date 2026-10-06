@@ -41,8 +41,8 @@ class RequestHandler {
          * import("./FormatConverter/ClaudeRequestConverter") &
          * import("./FormatConverter/ClaudeResponseConverter") &
          * import("./FormatConverter/ResponsesRequestConverter") &
-         * import("./FormatConverter/ResponsesStreamConverter") &
-         * import("./FormatConverter/ResponsesOutputConverter")}
+         * import("./FormatConverter/ResponsesStreamResponseConverter") &
+         * import("./FormatConverter/ResponsesNonStreamResponseConverter")}
          */ (new FormatConverter(logger, serverSystem));
 
         this.needsSwitchingAfterRequest = false;

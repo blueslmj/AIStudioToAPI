@@ -1,13 +1,13 @@
 /**
- * File: src/core/FormatConverter/ResponsesStreamConverter.js
- * Description: OpenAI Responses SSE events and incremental response state.
+ * File: src/core/FormatConverter/ResponsesStreamResponseConverter.js
+ * Description: OpenAI Responses streaming response conversion, SSE events, and incremental state.
  *
  * Author: Ellinav, iBenzene, bbbugg
  */
 
-const ResponsesOutputConverter = require("./ResponsesOutputConverter");
+const ResponsesNonStreamResponseConverter = require("./ResponsesNonStreamResponseConverter");
 
-class ResponsesStreamConverter extends ResponsesOutputConverter {
+class ResponsesStreamResponseConverter extends ResponsesNonStreamResponseConverter {
     /**
      * Convert Google streaming chunk to OpenAI Response API format
      * @param {string} googleChunk - Google API streaming chunk
@@ -924,4 +924,4 @@ class ResponsesStreamConverter extends ResponsesOutputConverter {
     }
 }
 
-module.exports = ResponsesStreamConverter;
+module.exports = ResponsesStreamResponseConverter;
