@@ -368,3 +368,14 @@ NO_PROXY=internal.example.com,10.0.0.0/8
    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=iBUHub/AIStudioToAPI" />
  </picture>
 </a>
+
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=ibuhub%2Faistudiotoapi&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ibuhub/aistudiotoapi&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ibuhub/aistudiotoapi&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ibuhub/aistudiotoapi&type=date&legend=top-left" />
+ </picture>
+</a>
