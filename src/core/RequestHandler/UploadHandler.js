@@ -54,8 +54,7 @@ class UploadHandler extends GeminiHandler {
             } catch (error) {
                 this._handleRequestError(error, res, requestId);
             } finally {
-                this.connectionRegistry.removeMessageQueue(requestId, "request_complete");
-                if (!res.writableEnded) res.end();
+                this._cleanupRequestResources(requestId, res);
             }
         } finally {
             this._finalizeTrackedRequest(requestId, res);

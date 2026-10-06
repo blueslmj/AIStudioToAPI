@@ -397,17 +397,7 @@ class ResponsesHandler extends RetryHandler {
 
                 this._handleRequestError(error, res, requestId);
             } finally {
-                this.connectionRegistry.removeMessageQueue(requestId, "request_complete");
-                if (this.needsSwitchingAfterRequest) {
-                    this.logger.info(
-                        `[Auth] Rotation count reached switching threshold (${this.authSwitcher.usageCount}/${this.config.switchOnUses}), will automatically switch account in background...`
-                    );
-                    this.authSwitcher.switchToNextAuth().catch(err => {
-                        this.logger.error(`[Auth] Background account switching task failed: ${err.message}`);
-                    });
-                    this.needsSwitchingAfterRequest = false;
-                }
-                if (!res.writableEnded) res.end();
+                this._cleanupRequestResources(requestId, res, { switchAccountIfNeeded: true });
             }
         } finally {
             this._finalizeTrackedRequest(requestId, res);
@@ -564,8 +554,7 @@ class ResponsesHandler extends RetryHandler {
             } catch (error) {
                 this._handleRequestError(error, res, requestId);
             } finally {
-                this.connectionRegistry.removeMessageQueue(requestId, "request_complete");
-                if (!res.writableEnded) res.end();
+                this._cleanupRequestResources(requestId, res);
             }
         } finally {
             this._finalizeTrackedRequest(requestId, res);

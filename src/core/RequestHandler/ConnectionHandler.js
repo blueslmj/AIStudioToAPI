@@ -9,6 +9,22 @@ const ErrorHandler = require("./ErrorHandler");
 const { WS_RECONNECT_WAIT_MS, WS_CONNECTION_READY_TIMEOUT_MS } = require("./constants");
 
 class ConnectionHandler extends ErrorHandler {
+    _cleanupRequestResources(requestId, res, { switchAccountIfNeeded = false } = {}) {
+        this.connectionRegistry.removeMessageQueue(requestId, "request_complete");
+
+        if (switchAccountIfNeeded && this.needsSwitchingAfterRequest) {
+            this.logger.info(
+                `[Auth] Rotation count reached switching threshold (${this.authSwitcher.usageCount}/${this.config.switchOnUses}), will automatically switch account in background...`
+            );
+            this.authSwitcher.switchToNextAuth().catch(err => {
+                this.logger.error(`[Auth] Background account switching task failed: ${err.message}`);
+            });
+            this.needsSwitchingAfterRequest = false;
+        }
+
+        if (!res.writableEnded) res.end();
+    }
+
     // Delegate methods to AuthSwitcher
     async _switchToNextAuth() {
         return this.authSwitcher.switchToNextAuth();
