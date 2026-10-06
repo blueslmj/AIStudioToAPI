@@ -358,23 +358,12 @@ class ClaudeHandler extends RetryHandler {
             });
 
             try {
-                // Create message queue inside try-catch to handle invalid authIndex
-                const messageQueue = this.connectionRegistry.createMessageQueue(
+                const { firstMessage, messageQueue } = this._dispatchProxyRequestForFirstMessage(
+                    proxyRequest,
                     requestId,
-                    this.currentAuthIndex,
-                    proxyRequest.request_attempt_id
+                    res
                 );
-                const messageQueueAuthIndex =
-                    this.connectionRegistry.getAuthIndexForRequest(requestId) ?? this.currentAuthIndex;
-                this._setupClientDisconnectHandler(res, requestId);
-
-                this._getUsageStatsService()?.recordAttempt(
-                    requestId,
-                    messageQueueAuthIndex,
-                    this._getAccountNameForIndex(messageQueueAuthIndex)
-                );
-                this._forwardRequest(proxyRequest, messageQueueAuthIndex);
-                const response = await messageQueue.dequeue();
+                const response = await firstMessage;
 
                 if (response.event_type === "error") {
                     this.logger.error(

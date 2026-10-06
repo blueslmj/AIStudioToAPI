@@ -62,6 +62,29 @@ class RetryHandler extends ConnectionHandler {
         return { proxyRequest, useRealStream };
     }
 
+    _dispatchProxyRequestForFirstMessage(proxyRequest, requestId, res) {
+        const messageQueue = this.connectionRegistry.createMessageQueue(
+            requestId,
+            this.currentAuthIndex,
+            proxyRequest.request_attempt_id
+        );
+        const messageQueueAuthIndex =
+            this.connectionRegistry.getAuthIndexForRequest(requestId) ?? this.currentAuthIndex;
+        this._setupClientDisconnectHandler(res, requestId);
+
+        this._getUsageStatsService()?.recordAttempt(
+            requestId,
+            messageQueueAuthIndex,
+            this._getAccountNameForIndex(messageQueueAuthIndex)
+        );
+        this._forwardRequest(proxyRequest, messageQueueAuthIndex);
+
+        return {
+            firstMessage: messageQueue.dequeue(),
+            messageQueue,
+        };
+    }
+
     _createImmediateSwitchTracker(initialAuthIndex = this.currentAuthIndex) {
         const attemptedAuthIndices = new Set();
         if (Number.isInteger(initialAuthIndex) && initialAuthIndex >= 0) {
